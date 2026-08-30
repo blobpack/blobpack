@@ -1,24 +1,43 @@
-"""Write a pack, read it back three ways."""
+"""Read the live demo dataset three ways.
+
+Runs against https://huggingface.co/datasets/MilkClouds/blobpack-demo
+(PASS images, LibriSpeech audio, PushT episode video); nothing is
+downloaded up front except one small table and, at the end, one shard:
+
+    pip install "blobpack[remote]" huggingface_hub pyarrow
+"""
 
 import zipfile
-from pathlib import Path
 
-from blobpack import PackSet, PackWriter
+import pyarrow.parquet as pq
+from huggingface_hub import hf_hub_download
 
-root = Path("example-dataset")
+from blobpack import PackSet
 
-with PackWriter(root / "media", ref_base="media") as writer:
-    refs = [writer.add(f"blobs/{i:04d}.bin", bytes([i % 256]) * (i + 1)) for i in range(1000)]
-    print(f"{writer.blobs_written} blobs -> {writer.shards_written} shard(s)")
+REPO = "MilkClouds/blobpack-demo"
 
-with PackSet(root / "media") as packs:
-    assert packs.read(refs[42]) == packs.read("blobs/0042.bin")
+# 1) streamed by reference: the table holds plain strings, and each blob
+#    is one ranged request against the Hub
+table = pq.read_table(hf_hub_download(REPO, "images/table/train.parquet", repo_type="dataset")).to_pylist()
+with PackSet(f"hf://datasets/{REPO}/images/media") as packs:
+    row = table[0]
+    image = packs.read(row["image_ref"])
+    assert len(image) == row["bytes"]
+    assert image == packs.read(f"image/{row['id']:06d}.jpg")  # or by bare key
+    print(f"streamed {row['filename']}: {len(image):,} bytes")
 
-    # epoch pattern: shuffle shard order, read sequentially within each shard
-    total = sum(len(data) for _, data in packs.iter_blobs(shuffle_shards=True))
-    print(f"epoch read {len(packs)} blobs, {total} bytes")
+# 2) seeked into like a file: a robot episode's mp4 as a bounded seekable
+#    object -- a video decoder would seek inside it the same way
+with PackSet(f"hf://datasets/{REPO}/robot/media") as packs:
+    with packs.open("video/000000.mp4") as clip:
+        header = clip.read(12)
+        assert header[4:8] == b"ftyp"  # it really is an mp4 container
+        clip.seek(-4, 2)
+        tail = clip.read()
+    print(f"seeked episode video: header {header!r}, last bytes {tail!r}")
 
-# no blobpack needed: it is a plain zip
-plain = zipfile.ZipFile(root / "media" / "pack-0000.zip").read("blobs/0042.bin")
-assert plain == bytes([42]) * 43
-print("plain zipfile read matches")
+# 3) no blobpack at all: a shard is a plain zip archive
+shard = hf_hub_download(REPO, "images/media/pack-0000.zip", repo_type="dataset")
+plain = zipfile.ZipFile(shard).read(f"image/{row['id']:06d}.jpg")
+assert plain == image
+print("plain zipfile read matches the streamed bytes")
