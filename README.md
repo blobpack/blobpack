@@ -219,8 +219,10 @@ HfApi().upload_folder(repo_id=REPO, repo_type="dataset", folder_path="dataset")
 packs = PackSet(f"hf://datasets/{REPO}/media")  # no download; ranged reads
 ```
 
-[examples/hf_hub.py](examples/hf_hub.py) runs the whole loop: build,
-publish, stream, download.
+[examples/hf_hub.py](examples/hf_hub.py) runs the whole loop, and a live
+three-domain demo — PASS images, LibriSpeech utterances, and PushT
+episodes cut into per-episode containers by `convert-lerobot` — is up at
+[MilkClouds/blobpack-demo](https://huggingface.co/datasets/MilkClouds/blobpack-demo).
 
 ## Migrating from other formats
 
