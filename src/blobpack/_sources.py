@@ -159,9 +159,11 @@ class _TailStream(io.RawIOBase):
     costs two or three requests -- instead of one readahead block per seek.
     """
 
-    # zipfile scans at most max-comment + EOCD bytes for the end record; a
-    # directory reaching below this window costs exactly one gap fetch
-    INITIAL_WINDOW = 65_535 + 22
+    # sized so EOCD (zipfile scans at most max-comment + 22 bytes for it)
+    # plus a typical central directory arrive in one request: remote reads
+    # are round-trip bound, and 256 KiB of transfer is noise next to one.
+    # A larger directory costs exactly one gap fetch.
+    INITIAL_WINDOW = 256 << 10
 
     def __init__(self, source: RangeSource):
         super().__init__()
@@ -255,11 +257,22 @@ class FsspecSource(RangeSource):
     def read_at(self, size: int, offset: int) -> bytes:
         if size == 0:
             return b""
-        self._check_range_support()
+        if self._verified_ranges:
+            data = self._cat_exact(size, offset)
+            return data[:size] if len(data) > size else data
+        # the first read doubles as the range-capability probe: an exact
+        # answer to a nonzero-offset request proves range support, and a
+        # request at the tail can never coincide with the whole object.
+        # Ambiguous shapes (offset 0, short reads) pay the explicit probe.
+        if offset == 0:
+            self._check_range_support()
+            return self.read_at(size, offset)
         data = self._cat_exact(size, offset)
-        if len(data) > size:  # some backends over-deliver; never under-report
-            data = data[:size]
-        return data
+        if len(data) == size:
+            self._verified_ranges = True
+            return data
+        self._check_range_support()  # raises on a range-ignoring backend
+        return data[:size] if len(data) > size else data
 
     #: mean gap below which a batch is served by one sequential sweep
     DENSE_GAP_BYTES = 1 << 20

@@ -179,6 +179,10 @@ class PackFile:
         self._bounds = [*offsets, self._payload_end]
         self._min_ends = [end for _, end in spans]
 
+    #: fused first reads cover the local extra field up to this much; blobpack
+    #: writes extras of 0 or 20 bytes, so one request suffices in practice
+    _HEADER_SLACK = 64
+
     def _resolve_member(self, name: str) -> tuple[int, int]:
         """Validate one deferred member's local header and cache its span.
 
@@ -188,8 +192,33 @@ class PackFile:
         entry = self._pending.get(name)
         if entry is None:
             raise KeyError(name)
+        block = self.source.read_at(LOCAL_HEADER_SIZE + len(entry[3]), entry[0])
+        return self._parse_pending_header(name, entry, block)
+
+    def _read_pending(self, name: str, entry: tuple[int, int, int, bytes]) -> bytes:
+        """First read of a deferred member: header and payload in one
+        request, since remote reads are round-trip bound."""
+        header_offset, size, _, expected = entry
+        # the directory-claimed size drives the request, so bound it before
+        # transferring anything: a forged size must not buy a giant read
+        if (
+            header_offset + LOCAL_HEADER_SIZE + len(expected) + size
+            > self._bounds[bisect.bisect_right(self._bounds, header_offset)]
+        ):
+            raise CorruptPackError(f"{self.path}: member {name!r} overlaps the next member or the central directory")
+        head_len = LOCAL_HEADER_SIZE + len(expected) + self._HEADER_SLACK
+        block = self.source.read_at(head_len + size, header_offset)
+        data_offset, _ = self._parse_pending_header(name, entry, block[:head_len])
+        start = data_offset - header_offset
+        payload = block[start : start + size]
+        if len(payload) < size:  # a foreign extra field larger than the slack
+            payload += self.source.read_at(size - len(payload), header_offset + start + len(payload))
+        if len(payload) != size:
+            raise CorruptPackError(f"{self.path}: short read for {name!r} ({len(payload)} of {size} bytes)")
+        return payload
+
+    def _parse_pending_header(self, name: str, entry: tuple[int, int, int, bytes], block: bytes) -> tuple[int, int]:
         header_offset, size, flags, expected = entry
-        block = self.source.read_at(LOCAL_HEADER_SIZE + len(expected), header_offset)
         if len(block) < LOCAL_HEADER_SIZE or block[:4] != LOCAL_HEADER_MAGIC:
             raise CorruptPackError(f"{self.path}: bad local header for {name!r}")
         local_flags, local_method = struct.unpack("<HH", block[6:10])
@@ -290,7 +319,13 @@ class PackFile:
 
     def read(self, name: str, *, offset: int | None = None, size: int | None = None) -> bytes:
         if offset is None or size is None:
-            offset, size = self._span(name)
+            span = self.index.get(name)
+            if span is None:
+                entry = self._pending.get(name)
+                if entry is None:
+                    raise KeyError(name)
+                return self._read_pending(name, entry)
+            offset, size = span
         data = self.source.read_at(size, offset)
         if len(data) != size:
             raise CorruptPackError(f"{self.path}: short read for {name!r} ({len(data)} of {size} bytes)")
