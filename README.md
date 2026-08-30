@@ -7,7 +7,7 @@ convention for referencing their members from annotation tables. It is not
 a new format: any zip tool can read it, no library is required to consume a
 dataset built with it, and your media bytes are stored unchanged.
 
-![Blob Pack dataset layout](docs/layout.svg)
+![Blob Pack dataset layout](https://raw.githubusercontent.com/blobpack/blobpack/main/docs/layout.svg)
 
 ## Install and quickstart
 
@@ -99,7 +99,7 @@ The mechanism is the same everywhere: a loose-file read costs per file
 filesystem and layout), while a pack read costs per byte. The gap is
 therefore widest where files are small and many:
 
-![Per-file cost across domains](benchmarks/plots/domains.png)
+![Per-file cost across domains](https://raw.githubusercontent.com/blobpack/blobpack/main/benchmarks/plots/domains.png)
 
 ## Compared with the alternatives
 
@@ -136,7 +136,7 @@ millions of tiny scalars, which belong in the table.
 Measured end to end through a torch DataLoader with persistent workers
 decoding every JPEG (COCO train2017, 40,000 images):
 
-![Training-loader throughput](benchmarks/plots/throughput.png)
+![Training-loader throughput](https://raw.githubusercontent.com/blobpack/blobpack/main/benchmarks/plots/throughput.png)
 
 On a shared cluster filesystem, blobpack sustains **2.5x loose files** on
 random access and edges past WebDataset when streaming — while keeping
@@ -145,7 +145,7 @@ converges because JPEG decoding becomes the bottleneck; there the isolated
 storage layer serves blobs at 0.035 ms each, 21.5x faster than stock
 `zipfile` on the same shards. Scaling with workers is clean:
 
-![Scaling with workers](benchmarks/plots/scaling.png)
+![Scaling with workers](https://raw.githubusercontent.com/blobpack/blobpack/main/benchmarks/plots/scaling.png)
 
 Startup is a one-time cost, and the [catalog](#very-large-pack-sets)
 removes it: a 40,000-member set opens in 0.35 s instead of 12 s. Full
