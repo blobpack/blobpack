@@ -215,7 +215,9 @@ from huggingface_hub import HfApi
 from blobpack import PackSet
 
 REPO = "your-name/your-dataset"
-HfApi().upload_folder(repo_id=REPO, repo_type="dataset", folder_path="dataset")
+api = HfApi()
+api.create_repo(REPO, repo_type="dataset", exist_ok=True)
+api.upload_folder(repo_id=REPO, repo_type="dataset", folder_path="dataset")
 packs = PackSet(f"hf://datasets/{REPO}/media")  # no download; ranged reads
 ```
 
