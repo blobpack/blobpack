@@ -176,14 +176,50 @@ class FsspecSource(RangeSource):
     def size(self) -> int:
         return int(self.fs.info(self.path)["size"])
 
+    def _cat_exact(self, size: int, offset: int) -> bytes:
+        """One ranged read that costs what it asks for.
+
+        A synchronous filesystem's ``cat_file`` goes through a buffered
+        file whose readahead cache fetches a whole block (4 MiB on the
+        Hub) per call -- a 34-byte header read costing 100,000x its size.
+        ``cache_type="none"`` makes the read exact; backends whose open()
+        does not take the kwarg fall back to the plain call.
+        """
+        if getattr(self.fs, "async_impl", False):
+            return self.fs.cat_file(self.path, start=offset, end=offset + size)
+        try:
+            return self.fs.cat_file(self.path, start=offset, end=offset + size, cache_type="none")
+        except TypeError:
+            return self.fs.cat_file(self.path, start=offset, end=offset + size)
+
     def read_at(self, size: int, offset: int) -> bytes:
         if size == 0:
             return b""
         self._check_range_support()
-        data = self.fs.cat_file(self.path, start=offset, end=offset + size)
+        data = self._cat_exact(size, offset)
         if len(data) > size:  # some backends over-deliver; never under-report
             data = data[:size]
         return data
+
+    #: mean gap below which a batch is served by one sequential sweep
+    DENSE_GAP_BYTES = 1 << 20
+
+    def _read_batch_sweep(self, ranges: list[tuple[int, int]]) -> list[bytes]:
+        """Serve a dense batch from one sequential pass over the shard.
+
+        When members are small and many, their headers sit a few hundred
+        kilobytes apart; per-range requests would pay a round-trip (and,
+        on buffered backends, a block fetch) per member. One stream with
+        forward seeks reads the covered region once, in order.
+        """
+        order = sorted(range(len(ranges)), key=lambda i: ranges[i][1])
+        out: list[bytes] = [b""] * len(ranges)
+        with self.fs.open(self.path, "rb", cache_type="readahead", block_size=8 << 20) as stream:
+            for index in order:
+                size, offset = ranges[index]
+                stream.seek(offset)
+                out[index] = stream.read(size)
+        return out
 
     def read_batch(self, ranges: list[tuple[int, int]]) -> list[bytes]:
         if not ranges:
@@ -191,9 +227,12 @@ class FsspecSource(RangeSource):
         self._check_range_support()
         cat_ranges = getattr(self.fs, "cat_ranges", None)
         if cat_ranges is None or not getattr(self.fs, "async_impl", False):
-            # a synchronous filesystem's cat_ranges is a serial loop, so an
-            # N-member index build would pay N sequential round-trips; a
-            # bounded pool recovers the concurrency the batch exists for
+            offsets = [offset for _, offset in ranges]
+            span = max(o + s for s, o in ranges) - min(offsets)
+            if span // len(ranges) <= self.DENSE_GAP_BYTES:
+                return self._read_batch_sweep(ranges)
+            # sparse ranges: a sweep would read the gaps; exact concurrent
+            # per-range reads pay one round-trip each instead
             with ThreadPoolExecutor(min(16, len(ranges))) as pool:
                 return list(pool.map(lambda r: self.read_at(r[0], r[1]), ranges))
         starts = [offset for _, offset in ranges]

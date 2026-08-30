@@ -187,7 +187,37 @@ def test_sync_filesystem_batches_run_concurrently(memory_packs):
     slow = SlowSync()
     assert not getattr(slow, "async_impl", False)
     source = FsspecSource(slow, shard_path)
+    source.DENSE_GAP_BYTES = -1  # force the sparse path; dense goes to the sweep
     ranges = [(4, offset) for offset in range(0, 400, 20)]
     chunks = source.read_batch(ranges)
     assert len(chunks) == len(ranges)
     assert SlowSync.peak > 1, "batched reads ran strictly one at a time"
+
+
+def test_dense_batch_is_served_by_one_sweep(memory_packs, monkeypatch):
+    """Small members sit close together; per-range requests would pay a
+    round-trip (and a readahead block) per member. A dense batch must go
+    through a single opened stream instead."""
+    from blobpack._sources import FsspecSource
+
+    fs, root, _ = memory_packs
+    shard_path = fs.glob(f"{root}/*.zip")[0]
+    source = FsspecSource(fs, shard_path)
+    source._verified_ranges = True  # keep the probe out of the counts
+
+    calls = {"cat_file": 0, "open": 0}
+    for name in calls:
+        original = getattr(fs, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            calls[_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(fs, name, counted)
+
+    ranges = [(8, offset) for offset in range(0, 320, 16)]
+    chunks = source.read_batch(ranges)
+    with fs.open(shard_path, "rb") as handle:
+        raw = handle.read()
+    assert chunks == [raw[o : o + s] for s, o in ranges]
+    assert calls["cat_file"] == 0 and calls["open"] <= 2, calls
