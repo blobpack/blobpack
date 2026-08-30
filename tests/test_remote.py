@@ -58,26 +58,25 @@ def test_seekable_views_work_remotely(memory_packs):
 
 
 def test_index_build_is_batched(memory_packs, monkeypatch):
-    """Opening a remote shard must cost a constant number of requests, not
-    one per member."""
+    """Opening a remote shard must ask for its member headers as one batch
+    per shard, never one request per member at the API layer."""
+    from blobpack._sources import FsspecSource
+
     fs, root, _ = memory_packs
-    calls = {"cat_file": 0, "cat_ranges": 0}
-    for name in calls:
-        original = getattr(fs, name)
+    calls = {"read_batch": 0}
+    original = FsspecSource.read_batch
 
-        def counted(*args, _name=name, _original=original, **kwargs):
-            calls[_name] += 1
-            return _original(*args, **kwargs)
+    def counted(self, ranges):
+        calls["read_batch"] += 1
+        return original(self, ranges)
 
-        monkeypatch.setattr(fs, name, counted)
+    monkeypatch.setattr(FsspecSource, "read_batch", counted)
     with PackSet.from_fs(fs, root) as packs:
         shards = len(packs._shards)
-    # exactly one batched range call per shard: each member's local header
-    # and name are covered by a single range, since the central directory
-    # already states how long the name is. (A backend without native
-    # batching fans these out internally, which is fsspec's business; what
-    # matters is that blobpack asks in batches.)
-    assert calls["cat_ranges"] == shards
+    # one batch per shard covers every member's local header and name; how
+    # the batch is transported (async cat_ranges, or a thread pool over a
+    # synchronous backend) is read_batch's own business
+    assert calls["read_batch"] == shards
     assert shards < len(PAYLOADS)  # several members per shard, so this is not trivial
 
 
@@ -155,3 +154,40 @@ def test_weak_remote_identity_is_never_trusted(tmp_path, monkeypatch):
     with PackSet(tmp_path / "media", catalog=True) as packs:
         assert packs.read("a.bin") == b"A" * 64
     assert rebuilds, "a weak identity was trusted and the catalog reused"
+
+
+def test_sync_filesystem_batches_run_concurrently(memory_packs):
+    """A synchronous fsspec filesystem answers cat_ranges one request at a
+    time; the batch path must not degrade to N sequential round-trips."""
+    import threading
+    import time
+
+    from blobpack._sources import FsspecSource
+
+    fs, root, _ = memory_packs
+    shard_path = fs.glob(f"{root}/*.zip")[0]
+
+    class SlowSync(type(fs)):  # counts overlapping cat_file calls
+        protocol = "slowsync"
+        in_flight = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def cat_file(self, path, start=None, end=None, **kw):
+            with SlowSync.lock:
+                SlowSync.in_flight += 1
+                SlowSync.peak = max(SlowSync.peak, SlowSync.in_flight)
+            try:
+                time.sleep(0.02)
+                return super().cat_file(path, start=start, end=end, **kw)
+            finally:
+                with SlowSync.lock:
+                    SlowSync.in_flight -= 1
+
+    slow = SlowSync()
+    assert not getattr(slow, "async_impl", False)
+    source = FsspecSource(slow, shard_path)
+    ranges = [(4, offset) for offset in range(0, 400, 20)]
+    chunks = source.read_batch(ranges)
+    assert len(chunks) == len(ranges)
+    assert SlowSync.peak > 1, "batched reads ran strictly one at a time"
