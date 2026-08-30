@@ -1,0 +1,22 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing; no token stored in the repo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs derives the version from git tags
+      - uses: astral-sh/setup-uv@v5
+      - run: make check-tag TAG=${{ github.ref_name }}
+      - run: make check
+      - run: make test
+      - run: make build
+      - run: make publish

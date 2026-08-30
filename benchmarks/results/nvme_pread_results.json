@@ -1,0 +1,70 @@
+{
+ "environment": {
+  "python": "3.14.3",
+  "work_dir": "/tmp/blobpack-nvme-pread.gpJIjD/benchmark"
+ },
+ "params": {
+  "seed": 0,
+  "probes": 4000,
+  "repeats": 5,
+  "workers": [
+   1,
+   8
+  ],
+  "cold_method": "posix_fadvise(POSIX_FADV_DONTNEED) before each pass",
+  "pread_index_build": "untimed"
+ },
+ "dataset": {
+  "items": 118287,
+  "payload_bytes": 19314466396,
+  "pack_shards": 36,
+  "pack_build_s": 53.94,
+  "probe_bytes": 642128801
+ },
+ "runs": {
+  "zipfile_w1": {
+   "seconds": [
+    1.7681,
+    1.7367,
+    1.7356,
+    1.7325,
+    1.74
+   ],
+   "median_s": 1.7367,
+   "median_ms_per_item": 0.4342
+  },
+  "zipfile_w8": {
+   "seconds": [
+    3.0674,
+    2.9788,
+    3.0508,
+    2.9675,
+    2.8821
+   ],
+   "median_s": 2.9788,
+   "median_ms_per_item": 0.7447
+  },
+  "pread_w1": {
+   "seconds": [
+    0.7221,
+    0.7183,
+    0.7276,
+    0.7147,
+    0.7249
+   ],
+   "median_s": 0.7221,
+   "median_ms_per_item": 0.1805
+  },
+  "pread_w8": {
+   "seconds": [
+    0.1387,
+    0.138,
+    0.1421,
+    0.1382,
+    0.1401
+   ],
+   "median_s": 0.1387,
+   "median_ms_per_item": 0.0347
+  }
+ }
+}

@@ -1,0 +1,19 @@
+{
+ "clips": 206,
+ "frames_total": 25650,
+ "wh": [
+  96,
+  96
+ ],
+ "source_av1_total_bytes": 6890970,
+ "jpg_total_bytes": 32438097,
+ "mp4_gop30_total_bytes": 4241345,
+ "mp4_gop300_total_bytes": 3854535,
+ "encode_mp4_gop30_s": 12.5,
+ "seq_decode_jpg_s": 1.65,
+ "seq_decode_mp4_gop30_s": 1.9,
+ "seq_decode_mp4_gop300_s": 1.91,
+ "rand_frame_jpg_s_per_1000": 0.06,
+ "rand_frame_mp4_gop30_s_per_1000": 3.84,
+ "rand_frame_mp4_gop300_s_per_1000": 4.83
+}

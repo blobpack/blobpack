@@ -1,0 +1,42 @@
+{
+ "source": "data/sources/LibriSpeech",
+ "work_dir": "/tmp/bp-audiobench",
+ "storage": {
+  "clips": 2703,
+  "loose_build_s": 0.4,
+  "pack_build_s": 0.5,
+  "tar_build_s": 0.5,
+  "payload_bytes": 359034309,
+  "mean_clip_bytes": 132828,
+  "loose_bytes": 365051904,
+  "loose_inodes": 2842,
+  "pack_bytes": 359477248,
+  "pack_inodes": 2,
+  "tar_bytes": 363896832,
+  "tar_inodes": 2
+ },
+ "reads": {
+  "sequential_median_s": {
+   "seq_loose_s": 0.43,
+   "seq_pack_s": 0.39,
+   "seq_tar_s": 0.25
+  },
+  "random_median": {
+   "rand_loose_ms_per_clip": 0.066,
+   "rand_pack_ms_per_clip": 0.147,
+   "probes": 2000,
+   "workers": 8
+  }
+ },
+ "decode": {
+  "decoded": 500,
+  "decode_loose_s": 0.74,
+  "decode_pack_s": 0.93
+ },
+ "relocation": {
+  "loose_rsync_s": 0.6,
+  "loose_rm_s": 0.17,
+  "pack_rsync_s": 0.31,
+  "pack_rm_s": 0.15
+ }
+}

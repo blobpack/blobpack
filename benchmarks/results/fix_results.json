@@ -1,0 +1,20 @@
+{
+ "zip_stored_convert_s": 95.81,
+ "zip_stored_bytes": 3261345494,
+ "zip_stored_member_compress_type": 0,
+ "zip_deflate_convert_s": 148.69,
+ "zip_deflate_bytes": 3240145982,
+ "zip_deflate_member_compress_type": 8,
+ "zip_subset_items": 20000,
+ "zip_subset_payload_bytes": 3258703316,
+ "pack_pread_w1_cold_s": 19.66,
+ "pack_pread_w8_cold_s": 2.41,
+ "pack_pread_items": 4000,
+ "cd_open_coco_3k_warm_ms": 5.59,
+ "cd_open_coco_3k_members": 3286,
+ "cd_open_pusht_25k_warm_ms": 49.55,
+ "cd_open_pusht_25k_members": 25650,
+ "lance_blob_batched_serial_cold_s": 30.29,
+ "lance_blob_batched_w8_cold_s": 2.54,
+ "lance_blob_items": 4000
+}

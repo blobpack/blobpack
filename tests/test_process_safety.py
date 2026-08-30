@@ -1,0 +1,149 @@
+"""Descriptor lifecycle across processes: fork, spawn (pickle), and the
+bounded open-file pool that keeps many-shard sets usable."""
+
+import multiprocessing as mp
+import os
+import pickle
+import sys
+import threading
+
+import pytest
+
+from blobpack import PackSet, PackWriter
+
+PAYLOADS = {f"s{i:02d}/blob.bin": bytes([i]) * (500 + i) for i in range(24)}
+
+
+@pytest.fixture()
+def pack_dir(tmp_path):
+    with PackWriter(tmp_path / "media", ref_base="media", max_pack_bytes=700) as writer:
+        for key, data in PAYLOADS.items():
+            writer.add(key, data)
+    return tmp_path / "media"
+
+
+def _read_all(packs):
+    return {key: packs.read(key) for key in PAYLOADS}
+
+
+def test_open_files_stay_bounded(pack_dir):
+    with PackSet(pack_dir, max_open_files=4) as packs:
+        assert len(packs._shards) > 4  # the pool has something to do
+        assert _read_all(packs) == PAYLOADS
+        open_now = [shard for shard in packs._shards.values() if shard.is_open]
+        assert len(open_now) <= 4
+        # a shard whose descriptor was reclaimed still reads
+        assert _read_all(packs) == PAYLOADS
+
+
+def test_max_open_files_validated(pack_dir):
+    with pytest.raises(ValueError):
+        PackSet(pack_dir, max_open_files=0)
+
+
+def test_pickle_roundtrip_without_descriptors(pack_dir):
+    """Spawned workers receive the parsed index, not descriptors."""
+    with PackSet(pack_dir) as packs:
+        packs.read(next(iter(PAYLOADS)))
+        blob = pickle.dumps(packs)
+    restored = pickle.loads(blob)
+    try:
+        assert not any(shard.is_open for shard in restored._shards.values())
+        assert _read_all(restored) == PAYLOADS  # reopens transparently
+    finally:
+        restored.close()
+
+
+def _child_reads(path, queue):
+    with PackSet(path) as packs:
+        queue.put(sorted((key, len(packs.read(key))) for key in PAYLOADS))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="spawn-only platform")
+def test_fork_child_reopens_and_parent_survives(pack_dir):
+    """A forked child must not read through, or close, inherited fds."""
+    ctx = mp.get_context("fork")
+    with PackSet(pack_dir) as packs:
+        parent_before = _read_all(packs)  # fds are open at fork time
+        queue = ctx.Queue()
+        child = ctx.Process(target=_child_reads, args=(str(pack_dir), queue))
+        child.start()
+        child_result = queue.get(timeout=60)
+        child.join(timeout=60)
+        assert child.exitcode == 0
+        assert child_result == sorted((key, len(data)) for key, data in PAYLOADS.items())
+        assert _read_all(packs) == parent_before  # parent unaffected
+
+
+def _child_reads_pickled(blob, queue):
+    packs = pickle.loads(blob)
+    try:
+        queue.put(sorted((key, len(packs.read(key))) for key in PAYLOADS))
+    finally:
+        packs.close()
+
+
+def test_spawned_worker_reads_from_pickled_set(pack_dir):
+    ctx = mp.get_context("spawn")
+    with PackSet(pack_dir) as packs:
+        packs.read(next(iter(PAYLOADS)))
+        blob = pickle.dumps(packs)
+        queue = ctx.Queue()
+        child = ctx.Process(target=_child_reads_pickled, args=(blob, queue))
+        child.start()
+        result = queue.get(timeout=120)
+        child.join(timeout=120)
+        assert child.exitcode == 0
+        assert result == sorted((key, len(data)) for key, data in PAYLOADS.items())
+        assert _read_all(packs) == PAYLOADS
+
+
+def test_threads_read_while_pool_reclaims(pack_dir):
+    """Reclaiming descriptors must never pull one out from under a read."""
+    keys = list(PAYLOADS)
+    errors = []
+
+    def worker():
+        try:
+            with PackSet(pack_dir, max_open_files=2) as packs:
+                for _ in range(20):
+                    for key in keys:
+                        assert packs.read(key) == PAYLOADS[key]
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    assert not errors
+
+
+def test_close_is_idempotent_and_frees_descriptors(pack_dir):
+    packs = PackSet(pack_dir, max_open_files=4)
+    packs.read(next(iter(PAYLOADS)))
+    packs.close()
+    packs.close()
+    assert not any(shard.is_open for shard in packs._shards.values())
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires fork")
+def test_child_closing_does_not_break_parent(pack_dir):
+    """Explicit close in a forked child must leave the parent's fds intact."""
+    with PackSet(pack_dir) as packs:
+        _read_all(packs)
+        pid = os.fork()
+        if pid == 0:  # child
+            status = 0
+            try:
+                packs.close()
+                with PackSet(pack_dir) as fresh:
+                    assert _read_all(fresh) == PAYLOADS
+            except BaseException:
+                status = 1
+            finally:
+                os._exit(status)
+        _, status = os.waitpid(pid, 0)
+        assert os.WEXITSTATUS(status) == 0
+        assert _read_all(packs) == PAYLOADS

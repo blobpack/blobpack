@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "blobpack"
+dynamic = ["version"]
+description = "Pack dataset media into plain STORED zip shards; read them fast anywhere."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [{ name = "Suhwan Choi" }]
+keywords = ["dataset", "storage", "zip", "machine-learning", "media", "data-loading"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Archiving",
+]
+
+[project.urls]
+Homepage = "https://github.com/blobpack/blobpack"
+Repository = "https://github.com/blobpack/blobpack"
+Specification = "https://github.com/blobpack/blobpack/blob/main/SPEC.md"
+
+[project.scripts]
+blobpack = "blobpack.cli:main"
+
+[project.optional-dependencies]
+hf = ["datasets"]
+remote = ["fsspec"]
+lerobot = ["pyarrow"]
+lance = ["pylance"]
+
+[dependency-groups]
+bench = ["matplotlib", "torch", "opencv-python-headless", "pyarrow", "webdataset", "pylance", "soundfile"]
+dev = ["pytest", "ruff", "fsspec", "pyarrow", "pylance"]
+
+[tool.uv]
+exclude-newer = "2026-08-21T00:00:00Z"
+
+[tool.ruff]
+line-length = 119
+extend-exclude = ["benchmarks"]  # archived measurement scripts, not library code
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+# building outside a git checkout (e.g. a tarball) still gets a version
+fallback_version = "0.0.0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/blobpack/_version.py"
+
+[tool.hatch.build]
+# the version file is generated at build time and vcs-ignored; ship it anyway
+artifacts = ["src/blobpack/_version.py"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blobpack"]

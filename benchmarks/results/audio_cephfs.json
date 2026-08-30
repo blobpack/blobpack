@@ -1,0 +1,62 @@
+{
+ "storage": {
+  "clips": 2703,
+  "loose_build_s": 0.7,
+  "pack_build_s": 0.4,
+  "tar_build_s": 0.5,
+  "payload_bytes": 359034309,
+  "mean_clip_bytes": 132828,
+  "loose_bytes": 359731712,
+  "loose_inodes": 2841,
+  "pack_bytes": 359411712,
+  "pack_inodes": 2,
+  "tar_bytes": 363888640,
+  "tar_inodes": 2
+ },
+ "reads": {
+  "sequential_passes_s": [
+   {
+    "seq_loose_s": 5.07,
+    "seq_pack_s": 0.77,
+    "seq_tar_s": 0.34
+   },
+   {
+    "seq_loose_s": 5.29,
+    "seq_pack_s": 0.7,
+    "seq_tar_s": 0.33
+   },
+   {
+    "seq_loose_s": 5.18,
+    "seq_pack_s": 0.72,
+    "seq_tar_s": 0.34
+   }
+  ],
+  "sequential_cold_s": {
+   "seq_loose_s": 5.07,
+   "seq_pack_s": 0.77,
+   "seq_tar_s": 0.34
+  },
+  "sequential_median_s": {
+   "seq_loose_s": 5.18,
+   "seq_pack_s": 0.72,
+   "seq_tar_s": 0.34
+  },
+  "random_median": {
+   "rand_loose_ms_per_clip": 0.339,
+   "rand_pack_ms_per_clip": 0.35,
+   "probes": 2000,
+   "workers": 8
+  }
+ },
+ "decode": {
+  "decoded": 500,
+  "decode_loose_s": 1.71,
+  "decode_pack_s": 1.49
+ },
+ "relocation": {
+  "loose_rsync_s": 4.76,
+  "loose_rm_s": 0.62,
+  "pack_rsync_s": 0.26,
+  "pack_rm_s": 0.03
+ }
+}
