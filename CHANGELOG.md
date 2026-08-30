@@ -4,6 +4,18 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+## 0.1.1
+
+Remote reads on synchronous, buffered fsspec backends (the Hugging Face
+Hub above all) cost far more than they should: every ranged read went
+through a readahead cache that fetched a full block per call, so opening
+a 2,000-member shard transferred gigabytes over minutes. Found while
+verifying the live demo dataset.
+
+- Dense index batches are served by one sequential sweep over a single
+  stream; sparse ranges read concurrently with exact-size requests.
+- Payload reads request exactly the bytes they need on such backends.
+
 ## 0.1.0
 
 First release. Implements Blob Pack specification 1.0. Before release the
