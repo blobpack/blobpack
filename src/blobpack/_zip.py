@@ -6,17 +6,21 @@ local header, whose extra field may differ from the central directory's --
 every blob can be served with a single positioned read, with no per-read
 header parsing and no archive-level locking.
 
-Because direct-offset reads bypass zipfile's own checks, the index pass
-cross-validates each member: local signature, local vs central compression
-method and filename, no encryption, and in-bounds payload ranges.
+Because direct-offset reads bypass zipfile's own checks, each member is
+cross-validated: local signature, local vs central compression method and
+filename, no encryption, and in-bounds payload ranges. Local sources run
+that pass at open; lazy sources (object storage) run it per member on first
+read, since scattered ~40-byte reads cost a round-trip each (issue #11).
 """
 
 from __future__ import annotations
 
+import bisect
 import io
 import os
 import struct
 import zipfile
+from collections.abc import Iterator
 
 LOCAL_HEADER_SIZE = 30
 LOCAL_HEADER_MAGIC = b"PK\x03\x04"
@@ -41,13 +45,13 @@ class CorruptPackError(BlobPackError):
     """A pack's structure does not match its central directory."""
 
 
-def _expected_name_bytes(info: zipfile.ZipInfo, flags: int) -> bytes:
+def _expected_name_bytes(name: str, flags: int) -> bytes:
     if flags & FLAG_UTF8:
-        return info.filename.encode("utf-8")
+        return name.encode("utf-8")
     try:
-        return info.filename.encode("cp437")
+        return name.encode("cp437")
     except UnicodeEncodeError:  # zipfile fell back to utf-8 when decoding
-        return info.filename.encode("utf-8")
+        return name.encode("utf-8")
 
 
 class PackFile:
@@ -58,17 +62,24 @@ class PackFile:
     them per process. Reads are thread-safe.
     """
 
-    def __init__(self, path_or_source, *, build_index: bool = True):
+    def __init__(self, path_or_source, *, build_index: bool = True, force_eager: bool = False):
         from ._sources import LocalSource, RangeSource
 
         self.source: RangeSource = (
             path_or_source if isinstance(path_or_source, RangeSource) else LocalSource(path_or_source)
         )
         self.index: dict[str, tuple[int, int]] = {}
+        # deferred members (lazy sources): name -> (header_offset, size,
+        # central flags, expected name bytes); index doubles as the cache of
+        # members whose local header has been validated
+        self._pending: dict[str, tuple[int, int, int, bytes]] = {}
+        self._bounds: list[int] = []
+        self._min_ends: list[int] = []
+        self._payload_end = 0
         if not build_index:
             return  # a catalog supplies byte ranges; skip the central directory
         try:
-            self._build_index()
+            self._build_index(force_eager=force_eager)
         except BaseException:
             self.close()
             raise
@@ -89,12 +100,13 @@ class PackFile:
         """Drop idle process-bound state; the index stays usable."""
         return self.source.release()
 
-    def _build_index(self) -> None:
-        """Parse the central directory once, then cross-check every member's
-        local header. Header and name reads are issued in two batches so a
-        remote shard costs a constant number of requests, not one per
-        member."""
-        stream = self.source.open_stream()
+    def _build_index(self, *, force_eager: bool = False) -> None:
+        """Parse the central directory once. On sources where scattered
+        reads are cheap, cross-check every member's local header now; on
+        lazy sources (object storage) defer that check to each member's
+        first read, since one ~40-byte ranged read per member makes open
+        cost O(shard bytes) rather than O(directory) (issue #11)."""
+        stream = self.source.open_directory_stream()
         try:
             with zipfile.ZipFile(stream) as bundle:
                 infos = [info for info in bundle.infolist() if not info.is_dir()]
@@ -103,12 +115,20 @@ class PackFile:
                 payload_end = getattr(bundle, "start_dir", None)
         finally:
             stream.close()
-        if payload_end is None:
-            payload_end = self.source.size()
+        self._payload_end = self.source.size() if payload_end is None else payload_end
+        # a forged end-of-directory offset can push zipfile's prefix
+        # adjustment negative, and some backends answer negative ranges
+        # relative to the object's tail
+        if any(info.header_offset < 0 for info in infos):
+            raise CorruptPackError(f"{self.path}: negative member header offset")
+
+        if self.source.lazy_validation and not force_eager:
+            self._defer_members(infos)
+            return
 
         # One read per member: the central directory already states how long
         # the name should be, so 30 + that covers the header and the name.
-        expected_names = [_expected_name_bytes(info, info.flag_bits) for info in infos]
+        expected_names = [_expected_name_bytes(info.filename, info.flag_bits) for info in infos]
         blocks = self.source.read_batch(
             [(LOCAL_HEADER_SIZE + len(expected), info.header_offset) for info, expected in zip(infos, expected_names)]
         )
@@ -124,8 +144,104 @@ class PackFile:
                     f"{self.path}: local header name length for {info.filename!r} disagrees with the central directory"
                 )
             local_name = block[LOCAL_HEADER_SIZE : LOCAL_HEADER_SIZE + name_len]
-            self._index_member(info, local_flags, local_method, name_len, extra_len, local_name, payload_end)
+            self._index_member(info, local_flags, local_method, name_len, extra_len, local_name, self._payload_end)
         self._reject_overlaps(infos)
+
+    def _defer_members(self, infos: list[zipfile.ZipInfo]) -> None:
+        """Run every check the central directory alone can answer; the rest
+        waits for each member's first read."""
+        encrypted = FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION
+        for info in infos:
+            name = info.filename
+            if name in self._pending:
+                raise CorruptPackError(f"{self.path}: duplicate member name {name!r} within one shard")
+            if info.flag_bits & encrypted:
+                raise UnsupportedMemberError(f"{self.path}: member {name!r} is encrypted")
+            if info.compress_type != zipfile.ZIP_STORED:
+                raise NotStoredError(
+                    f"{self.path}: member {name!r} is not STORED; blobpack requires uncompressed members"
+                )
+            expected = _expected_name_bytes(name, info.flag_bits)
+            self._pending[name] = (info.header_offset, info.file_size, info.flag_bits, expected)
+        # (header offset, directory-stated minimum end: header + name +
+        # payload, i.e. the true end minus the local extra field)
+        spans = sorted(
+            (entry[0], entry[0] + LOCAL_HEADER_SIZE + len(entry[3]) + entry[1]) for entry in self._pending.values()
+        )
+        offsets = [offset for offset, _ in spans]
+        if any(a == b for a, b in zip(offsets, offsets[1:])):
+            raise CorruptPackError(f"{self.path}: two members share a local header offset")
+        if offsets and offsets[-1] >= self._payload_end:
+            raise CorruptPackError(f"{self.path}: a member's local header lies inside the central directory")
+        # each member's payload must end before the next member's header (or
+        # the central directory) and start past the previous member's stated
+        # end; checked per member as it resolves
+        self._bounds = [*offsets, self._payload_end]
+        self._min_ends = [end for _, end in spans]
+
+    def _resolve_member(self, name: str) -> tuple[int, int]:
+        """Validate one deferred member's local header and cache its span.
+
+        Deterministic, so concurrent first reads may race freely: both
+        compute and install the same entry.
+        """
+        entry = self._pending.get(name)
+        if entry is None:
+            raise KeyError(name)
+        header_offset, size, flags, expected = entry
+        block = self.source.read_at(LOCAL_HEADER_SIZE + len(expected), header_offset)
+        if len(block) < LOCAL_HEADER_SIZE or block[:4] != LOCAL_HEADER_MAGIC:
+            raise CorruptPackError(f"{self.path}: bad local header for {name!r}")
+        local_flags, local_method = struct.unpack("<HH", block[6:10])
+        name_len, extra_len = struct.unpack("<HH", block[26:30])
+        if name_len != len(expected):
+            raise CorruptPackError(
+                f"{self.path}: local header name length for {name!r} disagrees with the central directory"
+            )
+        if (flags | local_flags) & (FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION):
+            raise UnsupportedMemberError(f"{self.path}: member {name!r} is encrypted")
+        if local_method != zipfile.ZIP_STORED:
+            raise CorruptPackError(
+                f"{self.path}: local header of {name!r} disagrees with the central directory on compression method"
+            )
+        if block[LOCAL_HEADER_SIZE : LOCAL_HEADER_SIZE + name_len] != _expected_name_bytes(name, local_flags):
+            raise CorruptPackError(
+                f"{self.path}: local header name mismatch at offset {header_offset} (expected {name!r})"
+            )
+        data_offset = header_offset + LOCAL_HEADER_SIZE + name_len + extra_len
+        position = bisect.bisect_right(self._bounds, header_offset)  # bounds[position - 1] is this member
+        if data_offset + size > self._bounds[position]:
+            raise CorruptPackError(f"{self.path}: member {name!r} overlaps the next member or the central directory")
+        # the predecessor's stated end excludes its local extra field, so a
+        # header forged into the last extra_len bytes of the predecessor's
+        # span is caught when the predecessor itself resolves, not here;
+        # nothing is served that the archive's author did not place there
+        if position >= 2 and header_offset < self._min_ends[position - 2]:
+            raise CorruptPackError(f"{self.path}: member {name!r} overlaps the previous member")
+        span = (data_offset, size)
+        self.index[name] = span
+        return span
+
+    def _span(self, name: str) -> tuple[int, int]:
+        span = self.index.get(name)
+        return self._resolve_member(name) if span is None else span
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.index or name in self._pending
+
+    def member_names(self) -> Iterator[str]:
+        """Member names in central-directory order."""
+        return iter(self._pending) if self._pending else iter(self.index)
+
+    def member_sizes(self) -> Iterator[tuple[str, int]]:
+        """``(name, payload size)`` pairs, without resolving deferred members."""
+        if self._pending:
+            return ((name, entry[1]) for name, entry in self._pending.items())
+        return ((name, span[1]) for name, span in self.index.items())
+
+    @property
+    def member_count(self) -> int:
+        return len(self._pending) if self._pending else len(self.index)
 
     def _reject_overlaps(self, infos) -> None:
         """Each member's bytes must be its own: a forged range that reaches
@@ -160,7 +276,7 @@ class PackFile:
             raise CorruptPackError(
                 f"{self.path}: local header of {name!r} disagrees with the central directory on compression method"
             )
-        if local_name != _expected_name_bytes(info, local_flags):
+        if local_name != _expected_name_bytes(info.filename, local_flags):
             raise CorruptPackError(
                 f"{self.path}: local header name mismatch at offset {info.header_offset} (expected {name!r})"
             )
@@ -174,7 +290,7 @@ class PackFile:
 
     def read(self, name: str, *, offset: int | None = None, size: int | None = None) -> bytes:
         if offset is None or size is None:
-            offset, size = self.index[name]
+            offset, size = self._span(name)
         data = self.source.read_at(size, offset)
         if len(data) != size:
             raise CorruptPackError(f"{self.path}: short read for {name!r} ({len(data)} of {size} bytes)")
@@ -183,7 +299,7 @@ class PackFile:
     def open(self, name: str, *, offset: int | None = None, size: int | None = None) -> BlobView:
         """Return a bounded, seekable view of one member."""
         if offset is None or size is None:
-            offset, size = self.index[name]
+            offset, size = self._span(name)
         return BlobView(self, name, offset, size)
 
     def close(self) -> None:

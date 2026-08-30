@@ -207,8 +207,9 @@ def _cmd_unpack(args: argparse.Namespace) -> int:
 
 def _cmd_ls(args: argparse.Namespace) -> int:
     with PackSet(args.src) as packs:
+        len(packs)  # materialize deferred remote directories
         for shard_name, shard in packs._shards.items():
-            for key, (_, size) in shard.index.items():
+            for key, size in shard.member_sizes():
                 print(f"{size}\t{shard_name}\t{key}")
     return 0
 

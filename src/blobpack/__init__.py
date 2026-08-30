@@ -311,6 +311,14 @@ class PackSet:
     positioned read. Reads are thread-safe and fastest when issued
     concurrently on network filesystems.
 
+    On object storage, directories load lazily instead: open lists the
+    shards, a full reference touches only its own shard, and a member's
+    local header is validated on its first read (adding one small ranged
+    read) rather than at open. The first bare-key read loads every
+    remaining directory, since bare keys resolve through a cross-shard
+    unique index. A corrupt or forged member therefore surfaces at first
+    read; ``blobpack verify`` remains the at-rest full check.
+
     ``ref_base`` is the pack directory's path as embedded in references
     (see PackWriter); references whose directory part does not match it are
     rejected rather than resolved to a same-named shard from some other
@@ -351,8 +359,10 @@ class PackSet:
         self.max_open_files = max_open_files
         self._recent: OrderedDict[str, PackFile] = OrderedDict()
         self._recent_lock = threading.Lock()  # LRU bookkeeping only; reads never hold it
+        self._open_lock = threading.Lock()  # guards deferred shard opening
         self._shards: dict[str, PackFile] = {}
-        self._by_key: dict[str, PackFile] = {}
+        self._deferred: dict[str, object] = {}  # shard name -> unopened lazy source
+        self._by_key: dict[str, PackFile] | None = {}
         self._catalog = None
         try:
             if catalog:
@@ -364,19 +374,60 @@ class PackSet:
             raise
         self._trim_open_files()
 
-    def _open_with_indices(self, sources: list, location: str) -> None:
-        """Parse every shard's central directory and keep the mapping in memory."""
+    def _open_with_indices(self, sources: list, location: str, *, force_eager: bool = False) -> None:
+        """Record every shard; parse directories eagerly for local sources
+        and on first touch for lazy ones (object storage), where a full-ref
+        read should not pay for shards it never visits (issue #11)."""
         for source in sources:
-            shard = PackFile(source)
+            if not force_eager and getattr(source, "lazy_validation", False):
+                name = _shard_name(source.path)
+                if name in self._deferred:
+                    raise BlobPackError(f"duplicate shard name {name!r} under {location}")
+                self._deferred[name] = source
+                continue
+            shard = PackFile(source, force_eager=force_eager)
             name = _shard_name(shard.path)
             if name in self._shards:
                 raise BlobPackError(f"duplicate shard name {name!r} under {location}")
             self._shards[name] = shard
-            for key in shard.index:
+            for key in shard.member_names():
                 if key in self._by_key:
                     other = _shard_name(self._by_key[key].path)
                     raise BlobPackError(f"duplicate key {key!r} in {name} and {other}")
                 self._by_key[key] = shard
+        if self._deferred:
+            self._by_key = None  # built when a bare key first needs it
+
+    def _open_deferred(self, name: str) -> PackFile:
+        with self._open_lock:
+            shard = self._shards.get(name)
+            if shard is None:
+                shard = PackFile(self._deferred[name])
+                self._shards[name] = shard
+                del self._deferred[name]  # only after success, so a failed open can be retried
+            return shard
+
+    def _require_by_key(self) -> dict[str, PackFile]:
+        """The cross-shard key map; on a deferred pack set the first bare-key
+        use builds it, loading the remaining directories and enforcing key
+        uniqueness across shards then rather than at open."""
+        by_key = self._by_key
+        if by_key is not None:
+            return by_key
+        with self._open_lock:
+            if self._by_key is not None:
+                return self._by_key
+            for name in sorted(self._deferred):
+                self._shards[name] = PackFile(self._deferred[name])
+                del self._deferred[name]
+            by_key = {}
+            for name in sorted(self._shards):
+                for key in self._shards[name].member_names():
+                    if key in by_key:
+                        raise BlobPackError(f"duplicate key {key!r} in {name} and {_shard_name(by_key[key].path)}")
+                    by_key[key] = self._shards[name]
+            self._by_key = by_key
+            return by_key
 
     def _open_with_catalog(self, sources: list, catalog: bool | str | os.PathLike) -> None:
         """Reuse a validated catalog when every shard is byte-identical to the
@@ -393,7 +444,9 @@ class PackSet:
             return
         for shard in probe.values():
             shard.close()
-        self._open_with_indices(sources, str(self.pack_dir))
+        # a catalog persists validated offsets, so the rebuild validates
+        # every member up front even on a lazy source
+        self._open_with_indices(sources, str(self.pack_dir), force_eager=True)
         self._catalog.write(self._shards)
         self._by_key = {}
         for shard in self._shards.values():
@@ -456,17 +509,19 @@ class PackSet:
         state = self.__dict__.copy()
         state["_recent"] = OrderedDict()
         del state["_recent_lock"]
+        del state["_open_lock"]
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
         self._recent = OrderedDict()
         self._recent_lock = threading.Lock()
+        self._open_lock = threading.Lock()
 
     def _locate(self, key: str) -> tuple[PackFile, int | None, int | None]:
         """Find a key's shard, and its byte range when a catalog holds it."""
         if self._catalog is None:
-            return self._by_key[key], None, None
+            return self._require_by_key()[key], None, None
         found = self._catalog.locate(key)
         if found is None:
             raise KeyError(key)
@@ -484,9 +539,18 @@ class PackSet:
             raise KeyError(
                 f"reference does not belong to this pack set (expected directory {self.ref_base!r}): {key_or_ref!r}"
             )
-        shard = self._shards.get(posixpath.basename(pack_path))
+        name = posixpath.basename(pack_path)
+        shard = self._shards.get(name)
+        if shard is None and name in self._deferred:
+            shard = self._open_deferred(name)
         if shard is None:
             raise KeyError(f"referenced shard not in this pack set: {key_or_ref!r}")
+        if self._catalog is None and self._by_key is None:
+            # deferred pack set: answer from the referenced shard alone, so a
+            # full-ref read never opens shards it does not touch
+            if key not in shard:
+                raise KeyError(f"blob not in the referenced shard: {key_or_ref!r}")
+            return shard, key, None, None
         located, offset, size = self._locate(key)
         if located is not shard:
             raise KeyError(f"blob not in the referenced shard: {key_or_ref!r}")
@@ -499,14 +563,14 @@ class PackSet:
 
     def __contains__(self, key: str) -> bool:
         if self._catalog is None:
-            return key in self._by_key
+            return key in self._require_by_key()
         return self._catalog.locate(key) is not None
 
     def __len__(self) -> int:
-        return len(self._by_key) if self._catalog is None else self._catalog.count()
+        return len(self._require_by_key()) if self._catalog is None else self._catalog.count()
 
     def keys(self) -> Iterator[str]:
-        return iter(self._by_key) if self._catalog is None else self._catalog.keys()
+        return iter(self._require_by_key()) if self._catalog is None else self._catalog.keys()
 
     def open(self, key_or_ref: str, *, buffered: bool = True):
         """Open one blob as a bounded, seekable, read-only file object.
@@ -550,11 +614,16 @@ class PackSet:
         """
         if num_workers < 1 or not 0 <= worker_id < num_workers:
             raise ValueError(f"invalid worker split: worker_id={worker_id}, num_workers={num_workers}")
-        shards = list(self._shards.values())
+        if self._catalog is None:
+            self._require_by_key()  # full iteration touches every shard anyway
+        # name order, not insertion order: on a deferred pack set insertion
+        # follows access history, and worker splits must agree across
+        # independently constructed instances
+        shards = [self._shards[name] for name in sorted(self._shards)]
         if shuffle_shards:
             random.Random(seed).shuffle(shards)
         if self._catalog is None:
-            counts = [len(shard.index) for shard in shards]
+            counts = [shard.member_count for shard in shards]
         else:
             counts = [self._catalog.count(_shard_name(shard.path)) for shard in shards]
         total = sum(counts)
@@ -568,7 +637,7 @@ class PackSet:
             # stream this shard's entries; a catalog holds them in SQLite, so
             # a million-member set never materializes its full listing here
             if self._catalog is None:
-                entries = ((key, None, None) for key in shard.index)
+                entries = ((key, None, None) for key in shard.member_names())
             else:
                 entries = self._catalog.entries(_shard_name(shard.path))
             for index, (key, offset, size) in enumerate(entries):
@@ -579,6 +648,8 @@ class PackSet:
     def close(self) -> None:
         for shard in self._shards.values():
             shard.close()
+        for source in self._deferred.values():
+            source.close()
         if self._catalog is not None:
             self._catalog.close()
             self._catalog = None

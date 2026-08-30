@@ -57,27 +57,105 @@ def test_seekable_views_work_remotely(memory_packs):
         assert handle.read() == data[-3:]
 
 
-def test_index_build_is_batched(memory_packs, monkeypatch):
-    """Opening a remote shard must ask for its member headers as one batch
-    per shard, never one request per member at the API layer."""
-    from blobpack._sources import FsspecSource
+class CountingFS:
+    """Delegating wrapper that records every byte a source pulls through
+    ``cat_file`` and through file objects returned by ``open``."""
 
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls: list[tuple[str, str, int]] = []  # (op, path, bytes returned)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def cat_file(self, path, start=None, end=None, **kwargs):
+        data = self._inner.cat_file(path, start=start, end=end, **kwargs)
+        self.calls.append(("cat", path, len(data)))
+        return data
+
+    def open(self, path, *args, **kwargs):
+        handle = self._inner.open(path, *args, **kwargs)
+        calls = self.calls
+
+        class CountingFile:
+            def __getattr__(self, name):
+                return getattr(handle, name)
+
+            def read(self, *a, **kw):
+                data = handle.read(*a, **kw)
+                calls.append(("read", path, len(data)))
+                return data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                handle.close()
+
+        return CountingFile()
+
+    def bytes_transferred(self, path=None):
+        return sum(size for _, p, size in self.calls if path is None or p == path)
+
+    def paths_touched(self):
+        return {p for _, p, _ in self.calls}
+
+
+def test_open_cost_is_directory_sized_not_shard_sized(tmp_path, monkeypatch):
+    """Opening plus one read over object storage must transfer on the order
+    of the central directory, never the whole shard (issue #11: eager
+    header validation made open O(shard bytes))."""
+    from blobpack._sources import _TailStream
+
+    monkeypatch.setattr(_TailStream, "INITIAL_WINDOW", 8192)
+    payloads = {f"blob{i:03d}.bin": bytes([i % 251]) * 2048 for i in range(200)}
+    with PackWriter(tmp_path / "media", ref_base="media") as writer:
+        for key, data in payloads.items():
+            writer.add(key, data)
+    fs = fsspec.filesystem("memory")
+    shard = next((tmp_path / "media").glob("*.zip"))
+    shard_bytes = shard.stat().st_size
+    with fs.open("/costbucket/media/pack-0000.zip", "wb") as handle:
+        handle.write(shard.read_bytes())
+    try:
+        counting = CountingFS(fs)
+        with PackSet.from_fs(counting, "/costbucket/media") as packs:
+            assert packs.read("blob007.bin") == payloads["blob007.bin"]
+        transferred = counting.bytes_transferred()
+        assert shard_bytes > 400_000
+        assert transferred < 100_000, f"open+read moved {transferred} of a {shard_bytes}-byte shard"
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_read_costs_one_request_after_first_touch(memory_packs):
+    """First read of a member fetches its local header and its payload;
+    every later read is a single ranged request."""
     fs, root, _ = memory_packs
-    calls = {"read_batch": 0}
-    original = FsspecSource.read_batch
+    counting = CountingFS(fs)
+    keys = list(PAYLOADS)
+    with PackSet.from_fs(counting, root) as packs:
+        packs.read(keys[0])
+        before = len(counting.calls)
+        packs.read(keys[0])
+        assert len(counting.calls) - before == 1  # payload only, span cached
+        before = len(counting.calls)
+        packs.read(keys[1])
+        assert len(counting.calls) - before == 2  # header + payload
 
-    def counted(self, ranges):
-        calls["read_batch"] += 1
-        return original(self, ranges)
 
-    monkeypatch.setattr(FsspecSource, "read_batch", counted)
-    with PackSet.from_fs(fs, root) as packs:
-        shards = len(packs._shards)
-    # one batch per shard covers every member's local header and name; how
-    # the batch is transported (async cat_ranges, or a thread pool over a
-    # synchronous backend) is read_batch's own business
-    assert calls["read_batch"] == shards
-    assert shards < len(PAYLOADS)  # several members per shard, so this is not trivial
+def test_full_ref_read_touches_only_its_shard(memory_packs):
+    """A ``zip://key::path`` read must not open shards it does not name."""
+    fs, root, refs = memory_packs
+    counting = CountingFS(fs)
+    with PackSet.from_fs(counting, root) as packs:
+        assert len(packs._shards) == 0  # nothing opened yet
+        last_key = sorted(refs, key=lambda k: refs[k])[-1]
+        assert packs.read(refs[last_key]) == PAYLOADS[last_key]
+        shard_path = refs[last_key].rsplit("::", 1)[1].rsplit("/", 1)[1]
+        assert {p.rsplit("/", 1)[1] for p in counting.paths_touched()} == {shard_path}
+        assert len(packs._shards) == 1
 
 
 def test_missing_shards_reported(memory_packs):
@@ -105,8 +183,9 @@ def test_rejects_backend_ignoring_ranges(memory_packs):
 
         cat_ranges = None
 
+    packs = PackSet.from_fs(WholeObjectFS(fs), root)  # open lists shards only
     with pytest.raises(BlobPackError, match="ignored a byte range"):
-        PackSet.from_fs(WholeObjectFS(fs), root)
+        packs.read(next(iter(PAYLOADS)))  # refused before serving any blob
 
 
 def test_pickles_without_a_live_client(memory_packs):
@@ -221,3 +300,170 @@ def test_dense_batch_is_served_by_one_sweep(memory_packs, monkeypatch):
         raw = handle.read()
     assert chunks == [raw[o : o + s] for s, o in ranges]
     assert calls["cat_file"] == 0 and calls["open"] <= 2, calls
+
+
+def _to_memory(fs, local_path, remote_path):
+    with fs.open(remote_path, "wb") as handle:
+        handle.write(local_path.read_bytes() if hasattr(local_path, "read_bytes") else local_path)
+
+
+def test_forged_local_header_rejected_at_first_read(tmp_path):
+    """Deferred validation still refuses a forged member -- at its first
+    read instead of at open -- and leaves intact members readable."""
+    import zipfile
+
+    from blobpack import CorruptPackError
+
+    shard = tmp_path / "pack-0000.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", b"A" * 64)
+        bundle.writestr("b.bin", b"B" * 64)
+    raw = bytearray(shard.read_bytes())
+    raw[raw.index(b"PK\x03\x04", 4)] = 0x00  # break b.bin's local header magic
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, bytes(raw), "/forged/media/pack-0000.zip")
+    try:
+        with PackSet.from_fs(fs, "/forged/media") as packs:  # open does not fail
+            assert packs.read("a.bin") == b"A" * 64
+            with pytest.raises(CorruptPackError, match="bad local header"):
+                packs.read("b.bin")
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_overlapping_member_rejected_at_first_read(tmp_path):
+    """A forged central-directory size reaching into the next member is
+    caught by the per-read bound check, matching the eager path."""
+    import struct
+    import zipfile
+
+    from blobpack import CorruptPackError
+
+    shard = tmp_path / "overlap.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", b"A" * 64)
+        bundle.writestr("b.bin", b"B" * 64)
+    raw = bytearray(shard.read_bytes())
+    at = raw.rindex(b"PK\x01\x02", 0, raw.rindex(b"PK\x01\x02"))
+    struct.pack_into("<II", raw, at + 20, 100, 100)  # a.bin grows into b.bin
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, bytes(raw), "/overlap/media/overlap.zip")
+    try:
+        with PackSet.from_fs(fs, "/overlap/media") as packs:
+            with pytest.raises(CorruptPackError, match="overlaps"):
+                packs.read("a.bin")
+            with pytest.raises(CorruptPackError, match="overlaps"):
+                packs.read("b.bin")  # its header sits inside a.bin's forged span
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_duplicate_keys_across_shards_surface_on_bare_key_use(tmp_path):
+    """Cross-shard key uniqueness is a bare-key concept; a deferred pack
+    set enforces it when the unique index is first needed."""
+    for i in (0, 1):
+        with PackWriter(tmp_path / f"m{i}", ref_base="media") as writer:
+            writer.add("same.bin", bytes([i]) * 32)
+    fs = fsspec.filesystem("memory")
+    for i in (0, 1):
+        _to_memory(fs, tmp_path / f"m{i}" / "pack-0000.zip", f"/dup/media/pack-{i:04d}.zip")
+    try:
+        with PackSet.from_fs(fs, "/dup/media") as packs:
+            assert packs.read("zip://same.bin::media/pack-0001.zip") == b"\x01" * 32
+            with pytest.raises(BlobPackError, match="duplicate key"):
+                packs.read("same.bin")
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_zip64_member_resolves_lazily(tmp_path):
+    """A force_zip64 member carries a 20-byte local extra; the deferred
+    span computation must honor it."""
+    import zipfile
+
+    shard = tmp_path / "pack-0000.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        info = zipfile.ZipInfo("wide.bin")
+        info.compress_type = zipfile.ZIP_STORED
+        with bundle.open(info, "w", force_zip64=True) as member:
+            member.write(b"Z" * 128)
+        bundle.writestr("tail.bin", b"T" * 16)
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, shard, "/z64/media/pack-0000.zip")
+    try:
+        with PackSet.from_fs(fs, "/z64/media") as packs:
+            assert packs.read("wide.bin") == b"Z" * 128
+            assert packs.read("tail.bin") == b"T" * 16
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_negative_header_offset_rejected_at_first_touch(tmp_path):
+    """A forged end-of-directory offset pushes zipfile's prefix adjustment
+    negative; some backends answer negative ranges from the object's tail,
+    so such a shard must be refused outright."""
+    import struct
+    import zipfile
+
+    from blobpack import CorruptPackError
+
+    shard = tmp_path / "pack-0000.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", b"A" * 64)
+    raw = bytearray(shard.read_bytes())
+    eocd = raw.rindex(b"PK\x05\x06")
+    offset_cd = struct.unpack_from("<I", raw, eocd + 16)[0]
+    struct.pack_into("<I", raw, eocd + 16, offset_cd + 40)  # concat goes negative
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, bytes(raw), "/neg/media/pack-0000.zip")
+    try:
+        with PackSet.from_fs(fs, "/neg/media") as packs, pytest.raises(CorruptPackError, match="negative member"):
+            packs.read("a.bin")
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_header_forged_into_previous_member_rejected(tmp_path):
+    """A member whose directory entry points at a well-formed local header
+    embedded inside the previous member's payload must be refused on its
+    own first read, before the previous member is ever touched."""
+    import struct
+    import zipfile
+
+    from blobpack import CorruptPackError
+
+    # a.bin's payload embeds a byte-exact fake local header for c.bin
+    fake = struct.pack("<4sHHHHHIIIHH", b"PK\x03\x04", 20, 0, 0, 0, 0, 0, 8, 8, 5, 0) + b"c.bin" + b"Z" * 8
+    shard = tmp_path / "pack-0000.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", fake + b"pad" * 10)
+        bundle.writestr("c.bin", b"Z" * 8)
+    raw = bytearray(shard.read_bytes())
+    at = raw.rindex(b"PK\x01\x02")  # c.bin's central entry (written last)
+    assert raw[at + 46 : at + 51] == b"c.bin"
+    struct.pack_into("<I", raw, at + 42, 35)  # header_offset -> inside a.bin's payload
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, bytes(raw), "/prev/media/pack-0000.zip")
+    try:
+        with PackSet.from_fs(fs, "/prev/media") as packs, pytest.raises(CorruptPackError, match="previous member"):
+            packs.read("c.bin")
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_iter_blobs_order_is_independent_of_access_history(memory_packs):
+    """Worker splits must agree across independently constructed pack sets,
+    so iteration order cannot follow which shard a read touched first."""
+    fs, root, refs = memory_packs
+    with PackSet.from_fs(fs, root) as packs:
+        baseline = [key for key, _ in packs.iter_blobs()]
+    with PackSet.from_fs(fs, root) as packs:
+        last_key = sorted(refs, key=lambda k: refs[k])[-1]
+        packs.read(refs[last_key])  # touch the last shard first
+        assert [key for key, _ in packs.iter_blobs()] == baseline
