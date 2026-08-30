@@ -179,11 +179,9 @@ class FsspecSource(RangeSource):
     def _cat_exact(self, size: int, offset: int) -> bytes:
         """One ranged read that costs what it asks for.
 
-        A synchronous filesystem's ``cat_file`` goes through a buffered
-        file whose readahead cache fetches a whole block (4 MiB on the
-        Hub) per call -- a 34-byte header read costing 100,000x its size.
-        ``cache_type="none"`` makes the read exact; backends whose open()
-        does not take the kwarg fall back to the plain call.
+        A synchronous ``cat_file`` fetches a whole readahead block (4 MiB
+        on the Hub) per call; ``cache_type="none"`` makes the read exact,
+        with a fallback for backends whose open() lacks the kwarg.
         """
         if getattr(self.fs, "async_impl", False):
             return self.fs.cat_file(self.path, start=offset, end=offset + size)
@@ -205,12 +203,8 @@ class FsspecSource(RangeSource):
     DENSE_GAP_BYTES = 1 << 20
 
     def _read_batch_sweep(self, ranges: list[tuple[int, int]]) -> list[bytes]:
-        """Serve a dense batch from one sequential pass over the shard.
-
-        When members are small and many, their headers sit a few hundred
-        kilobytes apart; per-range requests would pay a round-trip (and,
-        on buffered backends, a block fetch) per member. One stream with
-        forward seeks reads the covered region once, in order.
+        """Serve a dense batch from one sequential pass over the shard,
+        instead of paying a round-trip (and a block fetch) per member.
         """
         order = sorted(range(len(ranges)), key=lambda i: ranges[i][1])
         out: list[bytes] = [b""] * len(ranges)

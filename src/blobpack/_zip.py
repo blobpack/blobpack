@@ -193,14 +193,10 @@ class PackFile:
 class BlobView(io.RawIOBase):
     """A bounded, seekable, read-only view of one STORED member.
 
-    Reads are positioned reads inside the member's byte range, so nothing is
-    buffered up front and a multi-GB blob can be decoded or parsed in place
-    (TorchCodec, PyAV, soundfile, and zipfile itself accept file objects).
-    Every request is clamped to the member, so a view can never reach other
-    members or the archive's own structures.
-
-    A view carries its own position and is not thread-safe; open one per
-    consumer. The underlying pack file is.
+    Nothing is buffered up front, and every request is clamped to the
+    member's byte range, so a view can never reach other members or the
+    archive's own structures. A view carries its own position and is not
+    thread-safe; open one per consumer. The underlying pack file is.
     """
 
     def __init__(self, shard: PackFile, name: str, start: int, size: int):

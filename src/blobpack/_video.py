@@ -1,14 +1,8 @@
 """Splitting concatenated episode video, when it can be done losslessly.
 
-A source that packs many episodes into one file can be split into one
-container per episode, which is the shape the Blob Pack specification
-prefers: no interval arithmetic, seeks start at zero, and an episode can
-travel on its own. Whether that split is lossless is a property of the
-data, not of the request: it is a stream copy exactly when the episode
-boundary lands on a keyframe, and a re-encode otherwise.
-
-So boundaries are probed and reported; nothing here decides to re-encode
-on its own.
+A cut is a stream copy exactly when the episode boundary lands on a
+keyframe, and a re-encode otherwise -- so boundaries are probed and
+reported, and nothing here decides to re-encode on its own.
 """
 
 from __future__ import annotations
@@ -71,9 +65,8 @@ class SplitCheck:
     video_path: str
     aligned: list[int]
     unaligned: list[int]
-    #: the keyframe each aligned boundary matched. Cut here rather than at
-    #: the metadata timestamp: a boundary a hair past its keyframe is still
-    #: aligned, but asking the muxer for it skips to the following keyframe.
+    #: the keyframe each aligned boundary matched; cutting at the metadata
+    #: timestamp instead would skip a hair-past keyframe to the next one
     keyframes: dict[int, float] = field(default_factory=dict)
 
     @property
@@ -98,15 +91,10 @@ def check_alignment(path, boundaries: dict[int, float], tolerance: float = ALIGN
 def split_at(source, out_dir, times: list[float], *, prefix: str = "part") -> list:
     """Cut a file at the given seconds, one output per span, in order.
 
-    Uses the segment muxer, which yields exact spans with timestamps reset
-    to zero, unlike ``-ss``/``-t`` seeking, which carries trailing frames
-    into the next span. Always a stream copy, so the packets are preserved
-    verbatim; the muxer can then only cut on keyframes, which is why
-    boundaries are checked first.
-
-    ``times`` must be non-empty. With no explicit times the segment muxer
-    falls back to cutting every two seconds, which would quietly shred a
-    file the caller only meant to pass through.
+    The segment muxer yields exact spans with timestamps reset to zero
+    (``-ss``/``-t`` seeking carries trailing frames), always as a stream
+    copy -- which is why it can only cut on keyframes. ``times`` must be
+    non-empty: with none, the muxer silently cuts every two seconds.
     """
     ffmpeg = _tool("ffmpeg")
     if not ffmpeg:

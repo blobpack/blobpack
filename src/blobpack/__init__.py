@@ -171,12 +171,9 @@ class PackWriter:
         return self._add_stream(key, io.BytesIO(data), len(data), group=group)
 
     def add_file(self, key: str, source, *, size: int | None = None, group: str | None = None) -> str:
-        """Stream a blob from a file path or a binary file object.
-
-        Streams in 1 MiB chunks, so multi-GB blobs never materialize in
-        memory. ``size`` is taken from the filesystem for paths and from
-        seek for seekable objects; a non-seekable stream must pass it
-        explicitly (shard rolling needs the size up front).
+        """Stream a blob from a file path or binary file object in 1 MiB
+        chunks. A non-seekable stream must pass ``size`` explicitly, since
+        shard rolling needs it up front.
         """
         if isinstance(source, (str, os.PathLike)):
             path = Path(source)
@@ -196,9 +193,8 @@ class PackWriter:
         _validate_key(key)
         if key in self._keys:
             raise BlobPackError(f"duplicate blob key: {key!r}")
-        # projected growth of the shard file: payload + local header +
-        # central directory entry, each carrying the member name once, plus
-        # the zip64 extra fields when the member is large enough to need them
+        # projected shard growth: payload + local header + central entry
+        # (each carries the name once) + zip64 extras when forced below
         member_bytes = size + _LOCAL_OVERHEAD + _CENTRAL_OVERHEAD + 2 * len(key.encode("utf-8"))
         if size > zipfile.ZIP64_LIMIT:
             member_bytes += 2 * _ZIP64_EXTRA
@@ -258,11 +254,9 @@ class PackWriter:
             self._verify_stored()
 
     def _verify_stored(self) -> None:
-        """Re-read each shard's central directory and check every member is
-        STORED. Cheap (headers only), and the guard SPEC.md asks writers
-        for: zipfile takes the method from a passed ZipInfo but from the
-        archive default otherwise, so a future mixed-path writer could
-        silently produce members that break direct-offset reads."""
+        """Re-read each central directory and check every member is STORED:
+        the guard SPEC.md asks writers for, since a mixed-path zipfile
+        writer can silently produce compressed members."""
         for index in range(self._shard_index + 1):
             path = self.pack_dir / self._shard_name(index)
             with zipfile.ZipFile(path) as bundle:
@@ -420,12 +414,8 @@ class PackSet:
         return cls(root, _sources=sources, pattern=pattern, **kwargs)
 
     def _trim_open_files(self, keep: PackFile | None = None) -> None:
-        """Close idle descriptors beyond max_open_files, least recent first.
-
-        Indices stay in memory, so a closed shard reopens on its next read.
-        This keeps a pack set with thousands of shards inside the process
-        descriptor limit, which matters most with several dataloader
-        workers holding their own copies.
+        """Close idle descriptors beyond max_open_files, least recent first;
+        indices stay in memory, so a closed shard reopens on its next read.
         """
         with self._recent_lock:
             open_shards = [shard for shard in self._shards.values() if shard.is_open]
@@ -521,13 +511,10 @@ class PackSet:
     def open(self, key_or_ref: str, *, buffered: bool = True):
         """Open one blob as a bounded, seekable, read-only file object.
 
-        Use this instead of ``read`` for blobs too large to hold in memory,
-        or when a library wants a file object: video and audio decoders
-        (TorchCodec, PyAV, soundfile) seek inside the blob, and every seek
-        stays clamped to that blob's byte range.
-
-        ``buffered`` wraps the raw view in a ``BufferedReader``, which is
-        what most parsers expect; pass ``False`` for the unbuffered view.
+        For blobs too large to hold in memory, or for decoders that seek
+        (TorchCodec, PyAV, soundfile); every seek stays clamped to the
+        blob's byte range. ``buffered=False`` skips the ``BufferedReader``
+        wrapper most parsers expect.
         """
         shard, key, offset, size = self._resolve(key_or_ref)
         view = self._touch(shard).open(key, offset=offset, size=size)
@@ -556,15 +543,10 @@ class PackSet:
     ) -> Iterator[tuple[str, bytes]]:
         """Yield ``(key, data)`` shard by shard, sequentially within a shard.
 
-        With ``shuffle_shards=True`` the shard order is shuffled: the
-        epoch-style pattern that keeps shuffling while reading each shard at
-        sequential throughput.
-
-        With ``num_workers > 1``, the (optionally shuffled) member sequence
-        is split into ``num_workers`` contiguous ranges and only
-        ``worker_id``'s range is yielded: disjoint, complete, and mostly
-        sequential. This decouples dataloader worker count from shard count;
-        member ranges, not files, are the unit of parallelism.
+        ``shuffle_shards=True`` shuffles shard order while keeping each
+        shard's sequential throughput. With ``num_workers > 1`` only
+        ``worker_id``'s contiguous member range is yielded -- disjoint and
+        complete, so worker count is decoupled from shard count.
         """
         if num_workers < 1 or not 0 <= worker_id < num_workers:
             raise ValueError(f"invalid worker split: worker_id={worker_id}, num_workers={num_workers}")
