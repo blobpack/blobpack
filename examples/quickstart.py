@@ -36,8 +36,9 @@ with PackSet(f"hf://datasets/{REPO}/robot/media") as packs:
         tail = clip.read()
     print(f"seeked episode video: header {header!r}, last bytes {tail!r}")
 
-# 3) no blobpack at all: a shard is a plain zip archive
-shard = hf_hub_download(REPO, "images/media/pack-0000.zip", repo_type="dataset")
-plain = zipfile.ZipFile(shard).read(f"image/{row['id']:06d}.jpg")
-assert plain == image
+# 3) no blobpack at all: a shard is a plain zip archive (the 7 MB robot
+#    shard keeps this step's download small)
+shard = hf_hub_download(REPO, "robot/media/pack-0000.zip", repo_type="dataset")
+plain = zipfile.ZipFile(shard).read("video/000000.mp4")
+assert plain[:12] == header and plain[-4:] == tail
 print("plain zipfile read matches the streamed bytes")
