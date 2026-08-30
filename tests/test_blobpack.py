@@ -537,3 +537,27 @@ def test_writer_close_catches_a_compressed_member(tmp_path, monkeypatch):
     writer._writer = None
     with pytest.raises(NotStoredError, match="written compressed"):
         writer.close()
+
+
+def test_cli_ls_into_a_closed_pipe_is_not_an_error(tmp_path):
+    """`blobpack ls | head` closes stdout early; that must exit quietly."""
+    import subprocess
+    import sys as _sys
+
+    src = tmp_path / "src"
+    src.mkdir()
+    # enough members that ls overflows the 64 KiB pipe buffer and blocks,
+    # so the hang-up is guaranteed to surface as EPIPE in the child
+    for i in range(4000):
+        (src / f"member-{i:05d}.bin").write_bytes(b"x")
+    assert cli_main(["pack", str(src), str(tmp_path / "media")]) == 0
+    proc = subprocess.Popen(
+        [_sys.executable, "-m", "blobpack.cli", "ls", str(tmp_path / "media")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    proc.stdout.read(64)
+    proc.stdout.close()  # the `head` side hangs up
+    stderr = proc.stderr.read().decode()
+    assert proc.wait() == 0, stderr
+    assert "Traceback" not in stderr

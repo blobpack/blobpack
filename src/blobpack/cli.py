@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import tarfile
 import zipfile
@@ -403,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
     except BlobPackError as exc:  # a user-facing condition, not a crash
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except BrokenPipeError:  # e.g. `blobpack ls | head`; not an error
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 if __name__ == "__main__":
