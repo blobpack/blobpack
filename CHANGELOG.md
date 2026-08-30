@@ -4,6 +4,8 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+## 0.1.2
+
 Opening a pack set on object storage no longer costs O(shard bytes)
 (#11). 0.1.1 bounded each request but kept validating every member's
 local header at open; over the Hub that still meant transferring the
@@ -19,6 +21,10 @@ whole shard (43 s for a 2,000-member, 250 MB shard).
   directories and enforces cross-shard key uniqueness then.
 - A backend that ignores byte ranges is refused at the first actual
   read rather than at open.
+- A pre-release performance gate (`make perf`) guards open/read cost
+  budgets; request- and byte-count budgets also run in CI. Its first run
+  shrank the directory read window from 1 MiB to zipfile's EOCD scan
+  bound.
 
 ## 0.1.1
 
