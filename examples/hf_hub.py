@@ -29,7 +29,9 @@ def build() -> None:
 
 
 def publish() -> None:
-    HfApi().upload_folder(
+    api = HfApi()
+    api.create_repo(REPO_ID, repo_type="dataset", exist_ok=True)  # upload_folder does not create it
+    api.upload_folder(
         repo_id=REPO_ID,
         repo_type="dataset",
         folder_path=str(root),
