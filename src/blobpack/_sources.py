@@ -8,6 +8,7 @@ travel inside a pickle.
 
 from __future__ import annotations
 
+import io
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,11 @@ class RangeSource:
 
     #: identifies the shard for error messages and shard-name lookups
     path: str
+
+    #: True when scattered small reads cost a round-trip each (object
+    #: storage); readers then defer per-member validation to first read
+    #: instead of paying one such read per member at open (issue #11)
+    lazy_validation = False
 
     def size(self) -> int:
         raise NotImplementedError
@@ -40,6 +46,11 @@ class RangeSource:
         between threads or retained.
         """
         raise NotImplementedError
+
+    def open_directory_stream(self):
+        """Like ``open_stream`` but tuned for reading the central directory,
+        which lives at the tail of the archive."""
+        return self.open_stream()
 
     @property
     def is_open(self) -> bool:
@@ -140,6 +151,53 @@ class LocalSource(RangeSource):
         self.__init__(state["path"])
 
 
+class _TailStream(io.RawIOBase):
+    """A seekable read-only view for central-directory parsing.
+
+    Caches the object's tail and grows the cached window downward with one
+    ranged read per miss, so zipfile's EOCD scan plus the directory pass
+    costs two or three requests -- instead of one readahead block per seek.
+    """
+
+    INITIAL_WINDOW = 1 << 20
+
+    def __init__(self, source: RangeSource):
+        super().__init__()
+        self._source = source
+        self._size = source.size()
+        self._window_start = max(self._size - self.INITIAL_WINDOW, 0)
+        self._buffer = source.read_at(self._size - self._window_start, self._window_start)
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._pos
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        base = {os.SEEK_SET: 0, os.SEEK_CUR: self._pos, os.SEEK_END: self._size}[whence]
+        self._pos = base + offset
+        return self._pos
+
+    def readinto(self, buffer) -> int:
+        want = min(len(buffer), self._size - self._pos)
+        if want <= 0:
+            return 0
+        if self._pos < self._window_start:
+            # one fetch covers the gap; directory reads ascend afterwards
+            self._buffer = self._source.read_at(self._window_start - self._pos, self._pos) + self._buffer
+            self._window_start = self._pos
+        start = self._pos - self._window_start
+        chunk = self._buffer[start : start + want]
+        buffer[: len(chunk)] = chunk
+        self._pos += len(chunk)
+        return len(chunk)
+
+
 class FsspecSource(RangeSource):
     """A remote object read with stateless ranged requests.
 
@@ -150,6 +208,8 @@ class FsspecSource(RangeSource):
     credentials they hold -- and rebuilds the filesystem from them, rather
     than pickling a live client.
     """
+
+    lazy_validation = True
 
     def __init__(self, fs, path: str, *, storage_options: dict | None = None):
         self.fs = fs
@@ -243,6 +303,9 @@ class FsspecSource(RangeSource):
 
     def open_stream(self):
         return self.fs.open(self.path, "rb")
+
+    def open_directory_stream(self):
+        return _TailStream(self)
 
     def __getstate__(self) -> dict:
         protocol = getattr(self.fs, "protocol", None)

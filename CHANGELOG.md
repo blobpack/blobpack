@@ -4,6 +4,22 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+Opening a pack set on object storage no longer costs O(shard bytes)
+(#11). 0.1.1 bounded each request but kept validating every member's
+local header at open; over the Hub that still meant transferring the
+whole shard (43 s for a 2,000-member, 250 MB shard).
+
+- On remote sources, open reads central directories only; a member's
+  local header is validated on its first read (first read of a member
+  costs two ranged requests, later reads one). The integrity model is
+  unchanged -- a forged or overlapping member is refused at first read
+  instead of at open, and `blobpack verify` remains the at-rest check.
+- Shards also open lazily: a full `zip://key::path` reference touches
+  only its own shard; the first bare-key read loads the remaining
+  directories and enforces cross-shard key uniqueness then.
+- A backend that ignores byte ranges is refused at the first actual
+  read rather than at open.
+
 ## 0.1.1
 
 Remote reads on synchronous, buffered fsspec backends (the Hugging Face
