@@ -129,20 +129,18 @@ def test_open_cost_is_directory_sized_not_shard_sized(tmp_path, monkeypatch):
         fs.pseudo_dirs.clear()
 
 
-def test_read_costs_one_request_after_first_touch(memory_packs):
-    """First read of a member fetches its local header and its payload;
-    every later read is a single ranged request."""
+def test_read_costs_one_request(memory_packs):
+    """Every read is a single ranged request: a member's first read fuses
+    its local-header validation into the payload request."""
     fs, root, _ = memory_packs
     counting = CountingFS(fs)
     keys = list(PAYLOADS)
     with PackSet.from_fs(counting, root) as packs:
         packs.read(keys[0])
-        before = len(counting.calls)
-        packs.read(keys[0])
-        assert len(counting.calls) - before == 1  # payload only, span cached
-        before = len(counting.calls)
-        packs.read(keys[1])
-        assert len(counting.calls) - before == 2  # header + payload
+        for key in (keys[0], keys[1]):  # cached span, then a first touch
+            before = len(counting.calls)
+            assert packs.read(key) == PAYLOADS[key]
+            assert len(counting.calls) - before == 1
 
 
 def test_full_ref_read_touches_only_its_shard(memory_packs):
@@ -467,3 +465,47 @@ def test_iter_blobs_order_is_independent_of_access_history(memory_packs):
         last_key = sorted(refs, key=lambda k: refs[k])[-1]
         packs.read(refs[last_key])  # touch the last shard first
         assert [key for key, _ in packs.iter_blobs()] == baseline
+
+
+def test_open_plus_first_read_is_two_requests(tmp_path):
+    """The tail-window read doubles as the range-capability probe and the
+    first read fuses header and payload, so a small shard costs exactly
+    two ranged requests end to end."""
+    with PackWriter(tmp_path / "media", ref_base="media") as writer:
+        ref = writer.add("one.bin", b"X" * 512)
+        for i in range(200):  # push the shard past the tail window, so the
+            writer.add(f"pad/{i:03d}.bin", b"p" * 2048)  # window read has a nonzero offset
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, tmp_path / "media" / "pack-0000.zip", "/two/media/pack-0000.zip")
+    try:
+        counting = CountingFS(fs)
+        with PackSet.from_fs(counting, "/two/media") as packs:
+            assert packs.read(ref) == b"X" * 512
+        assert sum(1 for op, _, _ in counting.calls if op == "cat") == 2
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_fused_read_handles_extra_field_beyond_slack(tmp_path):
+    """A foreign member whose local extra field exceeds the fused-read
+    slack still reads back exactly, via one small follow-up request."""
+    import struct
+    import zipfile
+
+    shard = tmp_path / "pack-0000.zip"
+    payload = bytes(range(256)) * 3
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        info = zipfile.ZipInfo("wide-extra.bin")
+        info.compress_type = zipfile.ZIP_STORED
+        info.extra = struct.pack("<HH", 0x7777, 96) + b"\x00" * 96  # 100 B > 64 B slack
+        bundle.writestr(info, payload)
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, shard, "/extra/media/pack-0000.zip")
+    try:
+        with PackSet.from_fs(fs, "/extra/media") as packs:
+            assert packs.read("wide-extra.bin") == payload
+            assert packs.read("wide-extra.bin") == payload  # cached span path
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()

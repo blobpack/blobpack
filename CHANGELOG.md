@@ -4,6 +4,13 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+Remote reads are round-trip bound (a 4-byte range and a 146 KB payload
+cost the same ~0.9 s against the Hub), so the cold path sheds three
+requests (#16): the first tail-window read doubles as the
+range-capability probe, a member's first read fuses local-header
+validation into the payload request, and the directory window grew to
+256 KiB so EOCD plus a typical central directory arrive together.
+
 ## 0.1.2
 
 Opening a pack set on object storage no longer costs O(shard bytes)
