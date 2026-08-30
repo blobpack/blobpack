@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import sys
 import tarfile
 import zipfile
@@ -403,6 +405,13 @@ def main(argv: list[str] | None = None) -> int:
     except BlobPackError as exc:  # a user-facing condition, not a crash
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        # a reader hanging up (`blobpack ls | head`) is not an error; it is
+        # EPIPE on POSIX and EINVAL on Windows
+        if exc.errno not in (errno.EPIPE, errno.EINVAL):
+            raise
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 if __name__ == "__main__":
