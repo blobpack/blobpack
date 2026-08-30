@@ -1,4 +1,4 @@
-.PHONY: check test format build publish check-tag
+.PHONY: check test format perf build publish check-tag
 
 check:
 	uv run --group dev ruff check .
@@ -10,6 +10,11 @@ test:
 format:
 	uv run --group dev ruff format .
 	uv run --group dev ruff check --fix .
+
+# pre-release workload gate (wall-clock, so not a required CI check);
+# run before pushing a release tag
+perf:
+	uv run --group dev --with-editable . python benchmarks/perf_gate.py
 
 build:
 	rm -rf dist

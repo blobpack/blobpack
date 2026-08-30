@@ -36,3 +36,24 @@ the PR title becomes the squashed commit message, so write it as one.
 Code that parses a format or touches IO needs a test, because it fails
 quietly when it fails at all. If you are fixing a bug, the test should
 fail without your fix — please check that it does, rather than assuming.
+
+Changes on an IO path also need their cost accounted for, not just
+their result: the remote tests assert request and byte budgets, and a
+correct change that turns one request into N per member is a regression
+those budgets exist to catch.
+
+## Releasing
+
+Versioning is hatch-vcs — the tag is the version. Before pushing a
+`vX.Y.Z` tag, from the release commit:
+
+```sh
+make check test
+make perf    # pre-release workload gate; wall-clock, so not in CI
+```
+
+`make perf` runs `benchmarks/perf_gate.py`: local open/read/iteration
+against loose thresholds, plus a latency-injected fake remote whose
+budgets are effectively request- and byte-count budgets. Do not tag if
+it fails. Then `git tag vX.Y.Z && git push origin vX.Y.Z`; the release
+workflow checks the tag, re-runs CI, builds, and publishes to PyPI.

@@ -159,7 +159,9 @@ class _TailStream(io.RawIOBase):
     costs two or three requests -- instead of one readahead block per seek.
     """
 
-    INITIAL_WINDOW = 1 << 20
+    # zipfile scans at most max-comment + EOCD bytes for the end record; a
+    # directory reaching below this window costs exactly one gap fetch
+    INITIAL_WINDOW = 65_535 + 22
 
     def __init__(self, source: RangeSource):
         super().__init__()
