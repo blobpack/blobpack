@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from ._zip import BlobPackError, CorruptPackError
 
@@ -189,8 +190,12 @@ class FsspecSource(RangeSource):
             return []
         self._check_range_support()
         cat_ranges = getattr(self.fs, "cat_ranges", None)
-        if cat_ranges is None:
-            return [self.read_at(size, offset) for size, offset in ranges]
+        if cat_ranges is None or not getattr(self.fs, "async_impl", False):
+            # a synchronous filesystem's cat_ranges is a serial loop, so an
+            # N-member index build would pay N sequential round-trips; a
+            # bounded pool recovers the concurrency the batch exists for
+            with ThreadPoolExecutor(min(16, len(ranges))) as pool:
+                return list(pool.map(lambda r: self.read_at(r[0], r[1]), ranges))
         starts = [offset for _, offset in ranges]
         ends = [offset + size for size, offset in ranges]
         chunks = cat_ranges([self.path] * len(ranges), starts, ends)
