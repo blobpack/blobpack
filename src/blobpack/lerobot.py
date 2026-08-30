@@ -1,19 +1,16 @@
 """Convert LeRobot datasets into Blob Packs.
 
-LeRobot stores camera observations in two quite different ways, and which
-one a dataset uses decides what conversion can promise:
+LeRobot stores camera observations two ways, and which one decides what
+conversion can promise:
 
-- **video files** (v2.x: one file per episode and camera; v3: episodes
-  concatenated per camera). Each file is copied byte for byte and addressed
-  by a half-open ``[from_ns, to_ns)`` interval, so nothing is decoded,
-  re-encoded, or re-muxed.
-- **frames embedded in the table** (a ``struct<bytes, path>`` column in the
-  data parquet). Frames are moved into packs and the column becomes blob
-  references. The bytes survive exactly, but the table schema changes, so a
-  stock LeRobot loader will not read the result unchanged.
+- **video files** (v2.x per episode; v3 concatenated per camera): packet
+  copies, addressed by half-open ``[from_ns, to_ns)`` intervals -- never
+  decoded or re-encoded.
+- **frames embedded in the table**: moved into packs, the column becomes
+  references -- bytes lossless, but the schema changes.
 
-Because those are not equivalent, conversion is planned first and executed
-only after the caller sees what each feature will become.
+Not equivalent, so conversion is planned first and executed only after
+the caller sees what each feature will become.
 """
 
 from __future__ import annotations
@@ -465,10 +462,8 @@ def _extract_embedded(src: Path, dst: Path, writer: PackWriter, keys: list[str])
                         payload = value.get("bytes") if isinstance(value, dict) else value
                         hint = value.get("path") if isinstance(value, dict) else None
                         if payload is None and hint:
-                            # the path variant of an HF Image cell: the frame
-                            # lives beside the table rather than inside it --
-                            # and the path is table data, so it must resolve
-                            # inside the dataset root
+                            # HF Image path variant: the frame lives beside the
+                            # table; the path is table data, keep it under src
                             frame_path = (src / hint).resolve()
                             if not frame_path.is_relative_to(src.resolve()):
                                 raise BlobPackError(
@@ -503,16 +498,13 @@ def _extract_embedded(src: Path, dst: Path, writer: PackWriter, keys: list[str])
 
 
 def _cut_episodes(src: Path, relative: str, entries: list[dict], tmp) -> dict:
-    """Cut one file into per-episode containers, keyed by (episode, camera).
+    """Cut one file into per-episode containers.
 
-    Cuts land on the probed keyframes, not on the metadata timestamps. A
-    boundary sitting a hair past its keyframe still counts as aligned, but
-    handing that timestamp to the muxer moves the cut to the next keyframe
-    and pairs every following episode with the wrong container.
-
-    Returns ``(episode, camera) -> (key, path, span_ns)``, where ``span_ns``
-    is the produced container's actual duration (keyframe to keyframe) --
-    the metadata interval may sit up to the alignment tolerance away.
+    Cuts land on the probed keyframes, not the metadata timestamps: handing
+    the muxer a hair-past timestamp would slide the cut to the next
+    keyframe and mispair every following episode. Returns
+    ``(episode, camera) -> (key, path, span_ns)`` with the container's
+    actual keyframe-to-keyframe duration.
     """
     spans = sorted(
         (
@@ -545,11 +537,9 @@ def _cut_episodes(src: Path, relative: str, entries: list[dict], tmp) -> dict:
             f"{relative}: cutting produced {len(parts)} parts for {len(spans)} episodes; "
             "refusing to guess which is which"
         )
-    # A container runs keyframe to keyframe. When that agrees with the
-    # metadata duration to within the alignment tolerance, the container
-    # span is the truth (the metadata carried the jitter). A larger excess
-    # is inter-episode gap footage, which stays in the preceding container
-    # but must not be claimed as part of the episode.
+    # within tolerance the container span is the truth (metadata carried the
+    # jitter); a larger excess is inter-episode gap footage, which stays in
+    # the container but must not be claimed as part of the episode
     tolerance_ns = round(ALIGNMENT_TOLERANCE_S * NS_PER_SECOND)
     boundaries = [round(check.keyframes[span[0]] * NS_PER_SECOND) for span in spans] + [spans[-1][3]]
     spans_ns = []

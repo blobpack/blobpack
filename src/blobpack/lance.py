@@ -1,24 +1,14 @@
 """Move media out of a Lance dataset's columns and into Blob Packs.
 
-Lance is the other place payload bytes end up inside a table. A dataset
-carrying images or video in a binary column keeps its scalar columns
-useful, but every consumer needs Lance to reach the bytes, and random
-reads are answered by the table engine rather than by the filesystem.
+Extracts payload columns into packs and rewrites them to blob references,
+leaving every other column as it was; bytes survive unchanged, the schema
+does not, so conversion is planned first and executed only after the
+caller agrees. Both storage shapes are handled: plain ``binary`` /
+``large_binary`` columns and Lance's blob storage class (``take_blobs``).
 
-This converter extracts those columns into packs and rewrites them to blob
-references, leaving every other column exactly as it was. The bytes
-survive unchanged; the schema does not, so conversion is planned first and
-executed only after the caller agrees.
-
-Two storage shapes are handled: an ordinary ``binary``/``large_binary``
-column, and Lance's blob storage class, whose values are descriptors that
-must be fetched with ``take_blobs``.
-
-Unlike LeRobot, Lance has no convention for where media lives: a binary
-column may hold images, or it may hold hashes, embeddings, or serialized
-structs that belong in the table. Nothing here guesses. Candidate columns
-are measured and sniffed, the evidence is shown, and the caller says which
-to extract.
+Lance has no convention for where media lives -- a binary column may hold
+images, or hashes and embeddings that belong in the table -- so nothing is
+guessed: candidates are measured and sniffed, and the caller chooses.
 """
 
 from __future__ import annotations

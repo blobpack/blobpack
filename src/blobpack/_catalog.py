@@ -1,16 +1,9 @@
 """A disk-backed catalog of a pack set's members.
 
-Opening a pack set normally parses every shard's central directory and keeps
-one dict entry per member: fine for thousands of blobs, expensive for
-millions. A catalog moves that mapping into SQLite, so a later open costs a
-few queries instead of a full parse, and lookups do not hold the whole
-index in memory.
-
-A catalog is a cache of validated structure, so it is only reused when every
-shard still has the exact identity recorded when it was built. Identity is
-deliberately strong: size, mtime, ctime, device and inode locally, so a
-shard that was replaced in place cannot be served through stale offsets that
-skip the STORED and header checks.
+Moves the member index into SQLite so opening a million-member set costs a
+few queries instead of a full parse. It is a cache of validated structure:
+reused only while every shard keeps the exact identity recorded at build
+time, so an in-place replacement can never be served through stale offsets.
 """
 
 from __future__ import annotations
@@ -31,11 +24,9 @@ SCHEMA_VERSION = 1
 class _ThreadConnection:
     """One thread's SQLite connection, closed when the thread lets go.
 
-    Held only through the owning thread's local storage, so a transient
-    thread -- one of ``read_many``'s pool workers, say -- releases its
-    connection the moment it dies, instead of pinning an open descriptor
-    for every thread that ever touched the catalog. The catalog itself
-    keeps just a weak reference for ``close()``.
+    Held only through the thread's local storage (the catalog keeps a weak
+    reference for ``close()``), so a dying pool worker releases its
+    connection instead of pinning a descriptor forever.
     """
 
     __slots__ = ("__weakref__", "connection", "pid")
@@ -56,11 +47,9 @@ class _ThreadConnection:
 def shard_identity(source) -> str:
     """A string that changes whenever a shard's bytes could have changed.
 
-    Locally: size, mtime, ctime, device and inode. Remotely: size plus
-    whatever change marker the backend exposes (ETag, version, mtime).
-    A backend exposing none gets ``size=N;weak``, which ``matches`` never
-    trusts -- a same-size replacement would otherwise be served through
-    stale offsets that skipped every structural check.
+    Locally: size, mtime, ctime, device, inode. Remotely: size plus the
+    backend's change marker (ETag/version/mtime); with none it is
+    ``size=N;weak``, which ``matches`` never trusts.
     """
     path = Path(source.path)
     try:
