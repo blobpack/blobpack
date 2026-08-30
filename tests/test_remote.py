@@ -509,3 +509,34 @@ def test_fused_read_handles_extra_field_beyond_slack(tmp_path):
     finally:
         fs.store.clear()
         fs.pseudo_dirs.clear()
+
+
+def test_forged_size_cannot_buy_a_giant_fused_read(tmp_path):
+    """The fused first read is sized by the directory-claimed member size,
+    which must be bounds-checked before any bytes move: a forged size is
+    rejected without transferring the claimed range."""
+    import struct
+    import zipfile
+
+    from blobpack import CorruptPackError
+
+    shard = tmp_path / "pack-0000.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", b"A" * 64)
+        bundle.writestr("big-pad.bin", b"p" * 500_000)
+    raw = bytearray(shard.read_bytes())
+    at = raw.index(b"PK\x01\x02")  # a.bin's central entry
+    struct.pack_into("<II", raw, at + 20, 400_000, 400_000)  # forged size
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, bytes(raw), "/giant/media/pack-0000.zip")
+    try:
+        counting = CountingFS(fs)
+        with PackSet.from_fs(counting, "/giant/media") as packs:
+            len(packs)  # load the directory first, so the delta below is the read alone
+            before = counting.bytes_transferred()
+            with pytest.raises(CorruptPackError, match="overlaps"):
+                packs.read("a.bin")
+            assert counting.bytes_transferred() - before == 0  # rejected pre-transfer
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()

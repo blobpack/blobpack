@@ -199,6 +199,13 @@ class PackFile:
         """First read of a deferred member: header and payload in one
         request, since remote reads are round-trip bound."""
         header_offset, size, _, expected = entry
+        # the directory-claimed size drives the request, so bound it before
+        # transferring anything: a forged size must not buy a giant read
+        if (
+            header_offset + LOCAL_HEADER_SIZE + len(expected) + size
+            > self._bounds[bisect.bisect_right(self._bounds, header_offset)]
+        ):
+            raise CorruptPackError(f"{self.path}: member {name!r} overlaps the next member or the central directory")
         head_len = LOCAL_HEADER_SIZE + len(expected) + self._HEADER_SLACK
         block = self.source.read_at(head_len + size, header_offset)
         data_offset, _ = self._parse_pending_header(name, entry, block[:head_len])
