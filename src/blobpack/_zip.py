@@ -74,6 +74,7 @@ class PackFile:
         # members whose local header has been validated
         self._pending: dict[str, tuple[int, int, int, bytes]] = {}
         self._bounds: list[int] = []
+        self._min_ends: list[int] = []
         self._payload_end = 0
         if not build_index:
             return  # a catalog supplies byte ranges; skip the central directory
@@ -115,6 +116,11 @@ class PackFile:
         finally:
             stream.close()
         self._payload_end = self.source.size() if payload_end is None else payload_end
+        # a forged end-of-directory offset can push zipfile's prefix
+        # adjustment negative, and some backends answer negative ranges
+        # relative to the object's tail
+        if any(info.header_offset < 0 for info in infos):
+            raise CorruptPackError(f"{self.path}: negative member header offset")
 
         if self.source.lazy_validation and not force_eager:
             self._defer_members(infos)
@@ -157,14 +163,21 @@ class PackFile:
                 )
             expected = _expected_name_bytes(name, info.flag_bits)
             self._pending[name] = (info.header_offset, info.file_size, info.flag_bits, expected)
-        offsets = sorted(entry[0] for entry in self._pending.values())
+        # (header offset, directory-stated minimum end: header + name +
+        # payload, i.e. the true end minus the local extra field)
+        spans = sorted(
+            (entry[0], entry[0] + LOCAL_HEADER_SIZE + len(entry[3]) + entry[1]) for entry in self._pending.values()
+        )
+        offsets = [offset for offset, _ in spans]
         if any(a == b for a, b in zip(offsets, offsets[1:])):
             raise CorruptPackError(f"{self.path}: two members share a local header offset")
         if offsets and offsets[-1] >= self._payload_end:
             raise CorruptPackError(f"{self.path}: a member's local header lies inside the central directory")
         # each member's payload must end before the next member's header (or
-        # the central directory); checked per member as it resolves
+        # the central directory) and start past the previous member's stated
+        # end; checked per member as it resolves
         self._bounds = [*offsets, self._payload_end]
+        self._min_ends = [end for _, end in spans]
 
     def _resolve_member(self, name: str) -> tuple[int, int]:
         """Validate one deferred member's local header and cache its span.
@@ -196,9 +209,15 @@ class PackFile:
                 f"{self.path}: local header name mismatch at offset {header_offset} (expected {name!r})"
             )
         data_offset = header_offset + LOCAL_HEADER_SIZE + name_len + extra_len
-        next_start = self._bounds[bisect.bisect_right(self._bounds, header_offset)]
-        if data_offset + size > next_start:
+        position = bisect.bisect_right(self._bounds, header_offset)  # bounds[position - 1] is this member
+        if data_offset + size > self._bounds[position]:
             raise CorruptPackError(f"{self.path}: member {name!r} overlaps the next member or the central directory")
+        # the predecessor's stated end excludes its local extra field, so a
+        # header forged into the last extra_len bytes of the predecessor's
+        # span is caught when the predecessor itself resolves, not here;
+        # nothing is served that the archive's author did not place there
+        if position >= 2 and header_offset < self._min_ends[position - 2]:
+            raise CorruptPackError(f"{self.path}: member {name!r} overlaps the previous member")
         span = (data_offset, size)
         self.index[name] = span
         return span

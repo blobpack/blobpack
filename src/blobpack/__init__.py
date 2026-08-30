@@ -616,7 +616,10 @@ class PackSet:
             raise ValueError(f"invalid worker split: worker_id={worker_id}, num_workers={num_workers}")
         if self._catalog is None:
             self._require_by_key()  # full iteration touches every shard anyway
-        shards = list(self._shards.values())
+        # name order, not insertion order: on a deferred pack set insertion
+        # follows access history, and worker splits must agree across
+        # independently constructed instances
+        shards = [self._shards[name] for name in sorted(self._shards)]
         if shuffle_shards:
             random.Random(seed).shuffle(shards)
         if self._catalog is None:

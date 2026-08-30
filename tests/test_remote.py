@@ -353,7 +353,8 @@ def test_overlapping_member_rejected_at_first_read(tmp_path):
         with PackSet.from_fs(fs, "/overlap/media") as packs:
             with pytest.raises(CorruptPackError, match="overlaps"):
                 packs.read("a.bin")
-            assert packs.read("b.bin") == b"B" * 64
+            with pytest.raises(CorruptPackError, match="overlaps"):
+                packs.read("b.bin")  # its header sits inside a.bin's forged span
     finally:
         fs.store.clear()
         fs.pseudo_dirs.clear()
@@ -399,3 +400,70 @@ def test_zip64_member_resolves_lazily(tmp_path):
     finally:
         fs.store.clear()
         fs.pseudo_dirs.clear()
+
+
+def test_negative_header_offset_rejected_at_first_touch(tmp_path):
+    """A forged end-of-directory offset pushes zipfile's prefix adjustment
+    negative; some backends answer negative ranges from the object's tail,
+    so such a shard must be refused outright."""
+    import struct
+    import zipfile
+
+    from blobpack import CorruptPackError
+
+    shard = tmp_path / "pack-0000.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", b"A" * 64)
+    raw = bytearray(shard.read_bytes())
+    eocd = raw.rindex(b"PK\x05\x06")
+    offset_cd = struct.unpack_from("<I", raw, eocd + 16)[0]
+    struct.pack_into("<I", raw, eocd + 16, offset_cd + 40)  # concat goes negative
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, bytes(raw), "/neg/media/pack-0000.zip")
+    try:
+        with PackSet.from_fs(fs, "/neg/media") as packs, pytest.raises(CorruptPackError, match="negative member"):
+            packs.read("a.bin")
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_header_forged_into_previous_member_rejected(tmp_path):
+    """A member whose directory entry points at a well-formed local header
+    embedded inside the previous member's payload must be refused on its
+    own first read, before the previous member is ever touched."""
+    import struct
+    import zipfile
+
+    from blobpack import CorruptPackError
+
+    # a.bin's payload embeds a byte-exact fake local header for c.bin
+    fake = struct.pack("<4sHHHHHIIIHH", b"PK\x03\x04", 20, 0, 0, 0, 0, 0, 8, 8, 5, 0) + b"c.bin" + b"Z" * 8
+    shard = tmp_path / "pack-0000.zip"
+    with zipfile.ZipFile(shard, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", fake + b"pad" * 10)
+        bundle.writestr("c.bin", b"Z" * 8)
+    raw = bytearray(shard.read_bytes())
+    at = raw.rindex(b"PK\x01\x02")  # c.bin's central entry (written last)
+    assert raw[at + 46 : at + 51] == b"c.bin"
+    struct.pack_into("<I", raw, at + 42, 35)  # header_offset -> inside a.bin's payload
+    fs = fsspec.filesystem("memory")
+    _to_memory(fs, bytes(raw), "/prev/media/pack-0000.zip")
+    try:
+        with PackSet.from_fs(fs, "/prev/media") as packs, pytest.raises(CorruptPackError, match="previous member"):
+            packs.read("c.bin")
+    finally:
+        fs.store.clear()
+        fs.pseudo_dirs.clear()
+
+
+def test_iter_blobs_order_is_independent_of_access_history(memory_packs):
+    """Worker splits must agree across independently constructed pack sets,
+    so iteration order cannot follow which shard a read touched first."""
+    fs, root, refs = memory_packs
+    with PackSet.from_fs(fs, root) as packs:
+        baseline = [key for key, _ in packs.iter_blobs()]
+    with PackSet.from_fs(fs, root) as packs:
+        last_key = sorted(refs, key=lambda k: refs[k])[-1]
+        packs.read(refs[last_key])  # touch the last shard first
+        assert [key for key, _ in packs.iter_blobs()] == baseline
