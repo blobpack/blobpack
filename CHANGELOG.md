@@ -4,6 +4,12 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+## 0.1.4
+
+- Add PyPI, Python support, license, and CI badges to the README.
+- Declare Python 3.9–3.13 support in package classifiers.
+- Rename the test workflow to `ci.yml` and streamline agent instructions.
+
 ## 0.1.3
 
 Remote reads are round-trip bound (a 4-byte range and a 146 KB payload

@@ -1,5 +1,7 @@
 # blobpack
 
+[![CI](https://github.com/blobpack/blobpack/actions/workflows/ci.yml/badge.svg)](https://github.com/blobpack/blobpack/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/blobpack.svg)](https://pypi.org/project/blobpack/) [![Python versions](https://img.shields.io/pypi/pyversions/blobpack.svg)](https://pypi.org/project/blobpack/) [![License](https://img.shields.io/pypi/l/blobpack.svg)](https://github.com/blobpack/blobpack/blob/main/LICENSE)
+
 **Pack your dataset's media into dumb zip shards. Read them fast anywhere.**
 
 A Blob Pack is a directory of uncompressed (STORED) zip shards plus a
