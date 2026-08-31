@@ -8,7 +8,7 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 - Add PyPI, Python support, license, and CI badges to the README.
 - Declare Python 3.9–3.13 support in package classifiers.
-- Rename the test workflow to `ci.yml` and streamline agent instructions.
+- Rename the test workflow to `ci.yml`, fix release checkout permissions, and streamline agent instructions.
 
 ## 0.1.3
 
