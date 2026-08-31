@@ -7,5 +7,5 @@
 - Test all I/O and format-parsing changes; benchmark scripts are exempt.
 - File descriptors are process-owned. Keep indices picklable and reopen process-bound state lazily after fork or spawn.
 - Never alter measurements in `benchmarks/results/*.json`; only redact host/path provenance or rerun the benchmark.
-- Work through a branch and green PR; squash-merge using the PR title. Avoid push directly to `main`.
+- Work through a branch and green PR; squash-merge using the PR title. Avoid pushing directly to `main`.
 - Do not change repository visibility or publish packages or datasets.
