@@ -12,7 +12,7 @@ zip tool can read the packs, any table library can read the tables, no
 library is required to consume a BRCD, and your media bytes are stored
 unchanged.
 
-![Blob Pack dataset layout](https://raw.githubusercontent.com/blobpack/blobpack/main/docs/layout.svg)
+![BRCD layout: a table of blob references beside a Blob Pack](https://raw.githubusercontent.com/blobpack/blobpack/main/docs/layout.svg)
 
 ## Install and quickstart
 
