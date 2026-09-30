@@ -4,7 +4,8 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
-- Name the Blob-Referenced Columnar Dataset convention BRCD in `SPEC.md` and the README.
+- Name the Blob-Referenced Columnar Dataset convention BRCD in `SPEC.md`; the README introduces a dataset built on
+  Blob Packs as a BRCD from its first paragraph.
 
 ## 0.1.4
 
