@@ -4,6 +4,10 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+- Name the Blob-Referenced Columnar Dataset layout BRCD: the `SPEC.md` section becomes "Blob-Referenced Columnar
+  Dataset (BRCD) Layout" (its anchor changes), and the README introduces a dataset built on
+  Blob Packs as a BRCD from its first paragraph; the layout figure is titled for the BRCD with shorter notes.
+
 ## 0.1.4
 
 - Add PyPI, Python support, license, and CI badges to the README.

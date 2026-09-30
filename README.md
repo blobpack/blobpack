@@ -2,14 +2,17 @@
 
 [![CI](https://github.com/blobpack/blobpack/actions/workflows/ci.yml/badge.svg)](https://github.com/blobpack/blobpack/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/blobpack.svg)](https://pypi.org/project/blobpack/) [![Python versions](https://img.shields.io/pypi/pyversions/blobpack.svg)](https://pypi.org/project/blobpack/) [![License](https://img.shields.io/pypi/l/blobpack.svg)](https://github.com/blobpack/blobpack/blob/main/LICENSE)
 
-**Pack your dataset's media into dumb zip shards. Read them fast anywhere.**
+**Blob Packs and the BRCD layout: media in dumb zip shards, referenced from any table. Read them fast anywhere.**
 
-A Blob Pack is a directory of uncompressed (STORED) zip shards plus a
-convention for referencing their members from annotation tables. It is not
-a new format: any zip tool can read it, no library is required to consume a
-dataset built with it, and your media bytes are stored unchanged.
+A Blob Pack is a directory of uncompressed (STORED) zip shards. A dataset
+built on it is a **Blob-Referenced Columnar Dataset (BRCD)**: columnar
+tables hold the structured data, and each media blob stays in a pack,
+referenced from a table cell by a plain string. Neither is a new format: any
+zip tool can read the packs, any table library can read the tables, no
+library is required to consume a BRCD, and your media bytes are stored
+unchanged.
 
-![Blob Pack dataset layout](https://raw.githubusercontent.com/blobpack/blobpack/main/docs/layout.svg)
+![BRCD layout: a table of blob references beside a Blob Pack](https://raw.githubusercontent.com/blobpack/blobpack/main/docs/layout.svg)
 
 ## Install and quickstart
 
@@ -87,7 +90,7 @@ unzip -p media/pack-0000.zip images/0000.jpg > out.jpg
 
 Every modality hits the same wall: millions of small files are miserable to
 store, copy, and read, while burying the bytes inside a table makes every
-random read expensive. Blob Pack separates the two concerns — tables keep
+random read expensive. A BRCD separates the two concerns — tables keep
 the annotations, packs keep the payloads:
 
 | domain | what a blob is | what it replaces |
@@ -156,7 +159,8 @@ every caveat: [benchmarks/](benchmarks/).
 
 ## With Hugging Face Datasets
 
-References are plain strings, so tables need nothing special:
+Hugging Face Datasets is the BRCD's canonical table interface. References
+are plain strings, so tables need nothing special:
 
 ```python
 from datasets import Dataset, load_from_disk
@@ -394,8 +398,8 @@ Lance's blob storage class.
 
 [SPEC.md](SPEC.md) defines the format contract in one page: STORED zip
 shards as the default container, size and count limits, reference syntax,
-and immutability. This repository is one reference implementation of that
-contract. For timestamped media references and decoding, see
+and immutability, plus the BRCD layout for tables that reference
+blobs. This repository is one reference implementation of that contract. For timestamped media references and decoding, see
 [MediaRef](https://github.com/open-world-agents/MediaRef).
 
 ## License
