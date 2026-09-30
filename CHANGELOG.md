@@ -4,6 +4,8 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+- Name the Blob-Referenced Columnar Dataset convention BRCD in `SPEC.md` and the README.
+
 ## 0.1.4
 
 - Add PyPI, Python support, license, and CI badges to the README.

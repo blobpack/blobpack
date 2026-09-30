@@ -394,7 +394,8 @@ Lance's blob storage class.
 
 [SPEC.md](SPEC.md) defines the format contract in one page: STORED zip
 shards as the default container, size and count limits, reference syntax,
-and immutability. This repository is one reference implementation of that
+and immutability, plus the Blob-Referenced Columnar Dataset (BRCD)
+convention for tables that reference blobs. This repository is one reference implementation of that
 contract. For timestamped media references and decoding, see
 [MediaRef](https://github.com/open-world-agents/MediaRef).
 
