@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 346" width="880" height="346" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif">
   <style>
     .title { font-size: 15px; font-weight: 600; fill: #1f2328; }
     .mono { font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fill: #1f2328; }
@@ -18,43 +18,54 @@
   </defs>
 
   <text class="title" x="20" y="28">A Blob-Referenced Columnar Dataset (BRCD) is one self-contained folder</text>
+  <text class="note" x="20" y="48">Tables hold the data and a string reference per blob; a Blob Pack holds the bytes in uncompressed zip shards.</text>
 
-  <rect class="box" x="20" y="44" width="840" height="286"/>
-  <text class="mono" x="36" y="68">dataset/</text>
-  <path class="rootline" d="M 44 76 L 44 296"/>
+  <rect class="box" x="20" y="64" width="840" height="320"/>
+  <text class="mono" x="36" y="88">dataset/</text>
+  <path class="rootline" d="M 44 96 L 44 348"/>
 
   <!-- tables -->
-  <rect class="tablebox" x="60" y="84" width="370" height="124"/>
-  <text class="mono" x="76" y="106">table/</text>
-  <text class="note" x="130" y="106">columnar data + a string reference per blob</text>
-  <text class="monosm" x="76" y="132">image_ref</text>
-  <text class="monosm" x="362" y="132">label</text>
-  <line x1="76" y1="140" x2="414" y2="140" stroke="#d0d7de" stroke-width="1"/>
-  <text class="monosm" x="76" y="160">zip://img/000001.jpg::media/…</text>
-  <text class="monosm" x="362" y="160">3</text>
-  <text class="monosm" x="76" y="180">zip://clips/ep0.mp4::media/…</text>
-  <text class="monosm" x="362" y="180">1</text>
+  <rect class="tablebox" x="60" y="104" width="354" height="140"/>
+  <text class="mono" x="76" y="126">table/  (HF Datasets: Arrow or parquet)</text>
+  <text class="monosm" x="76" y="150">image_ref</text>
+  <text class="monosm" x="348" y="150">label</text>
+  <line x1="76" y1="158" x2="398" y2="158" stroke="#d0d7de" stroke-width="1"/>
+  <text class="monosm" x="76" y="176">zip://img/000001.jpg::media/…</text>
+  <text class="monosm" x="348" y="176">3</text>
+  <text class="monosm" x="76" y="194">zip://img/000002.jpg::media/…</text>
+  <text class="monosm" x="348" y="194">7</text>
+  <text class="monosm" x="76" y="212">zip://clips/ep0.mp4::media/…</text>
+  <text class="monosm" x="348" y="212">1</text>
+  <text class="note" x="76" y="234">columnar ops never touch blob bytes</text>
 
   <!-- packs -->
-  <rect class="packbox" x="480" y="84" width="364" height="124"/>
-  <text class="mono" x="496" y="106">media/</text>
-  <text class="note" x="550" y="106">Blob Pack: STORED zip shards</text>
-  <rect class="member" x="496" y="120" width="150" height="24"/>
-  <text class="monosm" x="506" y="136">pack-0000.zip</text>
-  <rect class="member" x="496" y="152" width="150" height="24"/>
-  <text class="monosm" x="506" y="168">pack-0001.zip</text>
-  <text class="monosm" x="506" y="196">…</text>
+  <rect class="packbox" x="480" y="104" width="364" height="140"/>
+  <text class="mono" x="496" y="126">media/  (Blob Pack)</text>
+  <rect class="member" x="496" y="140" width="150" height="24"/>
+  <text class="monosm" x="506" y="156">pack-0000.zip</text>
+  <rect class="member" x="496" y="172" width="150" height="24"/>
+  <text class="monosm" x="506" y="188">pack-0001.zip</text>
+  <rect class="member" x="496" y="204" width="150" height="24"/>
+  <text class="monosm" x="506" y="220">pack-0002.zip</text>
+  <text class="note" x="662" y="160">STORED zip shards,</text>
+  <text class="note" x="662" y="178">each ≤ 4 GiB,</text>
+  <text class="note" x="662" y="196">readable by any</text>
+  <text class="note" x="662" y="214">zip tool</text>
 
-  <path class="arrow" d="M 436 156 L 476 156"/>
+  <path class="arrow" d="M 422 180 L 474 180"/>
+  <text class="note" x="448" y="170" text-anchor="middle" font-size="10.5">resolves</text>
 
   <!-- inside a shard -->
-  <rect class="box" x="60" y="226" width="784" height="86"/>
-  <text class="mono" x="76" y="248">inside pack-0000.zip</text>
-  <rect class="member" x="76" y="260" width="132" height="28"/>
-  <text class="monosm" x="86" y="278">img/000001.jpg</text>
-  <rect class="member" x="216" y="260" width="140" height="28"/>
-  <text class="monosm" x="226" y="278">clips/ep0.mp4</text>
-  <rect class="member" x="364" y="260" width="120" height="28"/>
-  <text class="monosm" x="374" y="278">audio/u17.flac</text>
-  <text class="note" x="500" y="278">each blob: one positioned read</text>
+  <rect class="box" x="60" y="262" width="784" height="104"/>
+  <text class="mono" x="76" y="284">inside pack-0000.zip</text>
+  <rect class="member" x="76" y="296" width="132" height="28"/>
+  <text class="monosm" x="86" y="314">img/000001.jpg</text>
+  <rect class="member" x="216" y="296" width="132" height="28"/>
+  <text class="monosm" x="226" y="314">img/000002.jpg</text>
+  <rect class="member" x="356" y="296" width="140" height="28"/>
+  <text class="monosm" x="366" y="314">clips/ep0.mp4</text>
+  <rect class="member" x="504" y="296" width="120" height="28"/>
+  <text class="monosm" x="514" y="314">audio/u17.flac</text>
+  <text class="monosm" x="636" y="314">…</text>
+  <text class="note" x="76" y="350">Each member is a contiguous byte range, read with one positioned read; video and audio stay in their own containers.</text>
 </svg>
