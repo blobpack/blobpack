@@ -26,7 +26,7 @@ to be interpreted as described in RFC 2119.
   - Python's `zipfile` takes the method from a passed `ZipInfo` (whose default is STORED) but from the archive-level default otherwise, so a mixed-path writer can silently produce members that break direct-offset reads.
 - **Integrity**: Dataset-level at-rest checksums SHOULD cover packs; per-read CRC verification by readers is OPTIONAL.
 
-## Blob-Referenced Columnar Dataset Convention
+## Blob-Referenced Columnar Dataset (BRCD) Layout
 
 - **Definition**: A Blob-Referenced Columnar Dataset (BRCD) stores structured data in columnar tables and opaque payloads in Blob Packs, referenced from table cells using Blob References.
 - **Principles**:
@@ -48,4 +48,4 @@ to be interpreted as described in RFC 2119.
 - **Principle**: Recording and training impose conflicting requirements (append-only low-overhead capture vs. random access and dataset-wide queries); no single format solves both. Use a recording-specialized format for recording, then convert once for training.
   - The [OWA data pipeline](https://github.com/open-world-agents/open-world-agents/tree/main/projects/owa-data) is a good example of this conversion.
 - **Recording**: An MCAP-like per-episode log, with video in a separate container encoded for capture (long keyframe interval, e.g. 30 s).
-- **Training**: A training-specialized format supporting random access and dataset-wide queries, with video re-encoded for seeking (short keyframe interval, e.g. 30 frames / 0.5 s); the [BRCD convention](#blob-referenced-columnar-dataset-convention) above is one such format.
+- **Training**: A training-specialized format supporting random access and dataset-wide queries, with video re-encoded for seeking (short keyframe interval, e.g. 30 frames / 0.5 s); the [BRCD layout](#blob-referenced-columnar-dataset-brcd-layout) above is one such format.

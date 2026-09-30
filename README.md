@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/blobpack/blobpack/actions/workflows/ci.yml/badge.svg)](https://github.com/blobpack/blobpack/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/blobpack.svg)](https://pypi.org/project/blobpack/) [![Python versions](https://img.shields.io/pypi/pyversions/blobpack.svg)](https://pypi.org/project/blobpack/) [![License](https://img.shields.io/pypi/l/blobpack.svg)](https://github.com/blobpack/blobpack/blob/main/LICENSE)
 
-**Pack your dataset's media into dumb zip shards. Read them fast anywhere.**
+**Blob Packs and the BRCD layout: media in dumb zip shards, referenced from any table. Read them fast anywhere.**
 
 A Blob Pack is a directory of uncompressed (STORED) zip shards. A dataset
 built on it is a **Blob-Referenced Columnar Dataset (BRCD)**: columnar
@@ -398,7 +398,7 @@ Lance's blob storage class.
 
 [SPEC.md](SPEC.md) defines the format contract in one page: STORED zip
 shards as the default container, size and count limits, reference syntax,
-and immutability, plus the BRCD convention for tables that reference
+and immutability, plus the BRCD layout for tables that reference
 blobs. This repository is one reference implementation of that contract. For timestamped media references and decoding, see
 [MediaRef](https://github.com/open-world-agents/MediaRef).
 
