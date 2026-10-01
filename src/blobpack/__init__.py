@@ -431,19 +431,19 @@ class PackSet:
         if by_key is not None:
             return by_key
         with self._open_lock:
-            if self._by_key is not None:
-                return self._by_key
-            for name in sorted(self._deferred):
-                self._shards[name] = PackFile(self._deferred[name])
-                del self._deferred[name]
-            by_key = {}
-            for name in sorted(self._shards):
-                for key in self._shards[name].member_names():
-                    if key in by_key:
-                        raise BlobPackError(f"duplicate key {key!r} in {name} and {_shard_name(by_key[key].path)}")
-                    by_key[key] = self._shards[name]
-            self._by_key = by_key
-            return by_key
+            if self._by_key is None:
+                for name in sorted(self._deferred):
+                    self._shards[name] = PackFile(self._deferred[name])
+                    del self._deferred[name]
+                    self._trim_open_files()  # parsing opened its descriptor
+                by_key = {}
+                for name in sorted(self._shards):
+                    for key in self._shards[name].member_names():
+                        if key in by_key:
+                            raise BlobPackError(f"duplicate key {key!r} in {name} and {_shard_name(by_key[key].path)}")
+                        by_key[key] = self._shards[name]
+                self._by_key = by_key
+            return self._by_key
 
     def _open_with_catalog(self, sources: list, catalog: bool | str | os.PathLike) -> None:
         """Reuse a validated catalog when every shard is byte-identical to the

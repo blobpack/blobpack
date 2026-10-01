@@ -125,3 +125,10 @@ def test_concurrent_first_reads_of_one_shard(packed):
             results, errors = _read_together(packs, refs[key], 8)
             assert not errors and results == [PAYLOADS[key]] * 8
             assert len(packs._shards) == 1
+
+
+def test_parsing_every_shard_keeps_the_descriptor_budget(packed):
+    pack_dir, _ = packed
+    with PackSet(pack_dir, lazy=True, max_open_files=4) as packs:
+        assert len(packs) == len(PAYLOADS) and len(packs._shards) > 4
+        assert sum(shard.is_open for shard in packs._shards.values()) <= 4
