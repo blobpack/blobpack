@@ -325,6 +325,14 @@ class PackSet:
     dataset. It defaults to the pack directory's final path component; pass
     ``ref_base=""`` to accept any directory part.
 
+    ``lazy=True`` defers local shards the same way: opening only lists them,
+    and a shard's directory is parsed (and its members validated) when a
+    reference first names it, or when a bare key, ``len``, ``keys`` or
+    iteration needs every shard. Use it for large pack directories on
+    network filesystems, where parsing every directory up front dominates
+    opening; corruption in a shard then surfaces at its first touch rather
+    than at open.
+
     Note: per-read CRC verification is skipped by design; verify packs at
     rest instead (``blobpack verify`` or dataset-level checksums).
     """
@@ -338,6 +346,7 @@ class PackSet:
         max_open_files: int = DEFAULT_MAX_OPEN_FILES,
         storage_options: dict | None = None,
         catalog: bool | str | os.PathLike | None = None,
+        lazy: bool = False,
         _sources: list | None = None,
     ):
         if max_open_files < 1:
@@ -357,6 +366,7 @@ class PackSet:
         # given to both sides always matches
         self.ref_base = self.pack_dir.name if ref_base is None else (ref_base and posixpath.normpath(ref_base))
         self.max_open_files = max_open_files
+        self.lazy = lazy
         self._recent: OrderedDict[str, PackFile] = OrderedDict()
         self._recent_lock = threading.Lock()  # LRU bookkeeping only; reads never hold it
         self._open_lock = threading.Lock()  # guards deferred shard opening
@@ -376,11 +386,12 @@ class PackSet:
 
     def _open_with_indices(self, sources: list, location: str, *, force_eager: bool = False) -> None:
         """Record every shard; parse directories eagerly for local sources
-        and on first touch for lazy ones (object storage), where a full-ref
-        read should not pay for shards it never visits (issue #11)."""
+        and on first touch for lazy ones (object storage, or any source with
+        ``lazy=True``), where a full-ref read should not pay for shards it
+        never visits (issue #11)."""
         for source in sources:
-            if not force_eager and getattr(source, "lazy_validation", False):
-                name = _shard_name(source.path)
+            if not force_eager and (self.lazy or getattr(source, "lazy_validation", False)):
+                name = _shard_name(getattr(source, "path", source))
                 if name in self._deferred:
                     raise BlobPackError(f"duplicate shard name {name!r} under {location}")
                 self._deferred[name] = source
@@ -398,10 +409,15 @@ class PackSet:
         if self._deferred:
             self._by_key = None  # built when a bare key first needs it
 
-    def _open_deferred(self, name: str) -> PackFile:
+    def _open_deferred(self, name: str) -> PackFile | None:
+        """The named shard, parsing its directory if still deferred; None if
+        the set has no such shard. Checked under the lock: another thread may
+        be moving it from deferred to open."""
         with self._open_lock:
             shard = self._shards.get(name)
             if shard is None:
+                if name not in self._deferred:
+                    return None
                 shard = PackFile(self._deferred[name])
                 self._shards[name] = shard
                 del self._deferred[name]  # only after success, so a failed open can be retried
@@ -541,7 +557,7 @@ class PackSet:
             )
         name = posixpath.basename(pack_path)
         shard = self._shards.get(name)
-        if shard is None and name in self._deferred:
+        if shard is None:
             shard = self._open_deferred(name)
         if shard is None:
             raise KeyError(f"referenced shard not in this pack set: {key_or_ref!r}")
@@ -649,7 +665,8 @@ class PackSet:
         for shard in self._shards.values():
             shard.close()
         for source in self._deferred.values():
-            source.close()
+            if hasattr(source, "close"):  # a local shard is a bare path until opened
+                source.close()
         if self._catalog is not None:
             self._catalog.close()
             self._catalog = None

@@ -4,6 +4,8 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+- `PackSet(..., lazy=True)` defers local shards as object storage already does: opening lists the
+  shards, and a reference parses only the shard it names. Default opening is unchanged.
 - Name the Blob-Referenced Columnar Dataset layout BRCD: the `SPEC.md` section becomes "Blob-Referenced Columnar
   Dataset (BRCD) Layout" (its anchor changes), and the README introduces a dataset built on
   Blob Packs as a BRCD from its first paragraph; the layout figure is titled for the BRCD with shorter notes.

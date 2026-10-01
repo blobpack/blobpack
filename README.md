@@ -196,6 +196,16 @@ exact identity recorded at build time, and anything else rebuilds it with
 full validation — a shard swapped in place is never served through stale
 offsets.
 
+When reads go through references (`zip://key::shard`), `lazy=True` skips
+the up-front parse instead: opening lists the shards, and a shard's index is
+parsed when a reference first names it. A bare key, `len` or iteration still
+parses every shard. Corruption in a shard then surfaces at its first read
+rather than at open.
+
+```python
+packs = PackSet("media", lazy=True)  # open lists shards; reads parse their own
+```
+
 ### Object storage
 
 Packs work unchanged on anything fsspec speaks: the index builds from
