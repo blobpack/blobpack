@@ -132,3 +132,13 @@ def test_parsing_every_shard_keeps_the_descriptor_budget(packed):
     with PackSet(pack_dir, lazy=True, max_open_files=4) as packs:
         assert len(packs) == len(PAYLOADS) and len(packs._shards) > 4
         assert sum(shard.is_open for shard in packs._shards.values()) <= 4
+
+
+def test_failed_references_keep_the_descriptor_budget(packed):
+    pack_dir, refs = packed
+    shards = sorted({ref.split("::")[1] for ref in refs.values()})
+    with PackSet(pack_dir, lazy=True, max_open_files=2) as packs:
+        for shard in shards:
+            with pytest.raises(KeyError):
+                packs.read(f"zip://absent.bin::{shard}")
+        assert sum(shard.is_open for shard in packs._shards.values()) <= 2

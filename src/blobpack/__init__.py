@@ -433,9 +433,10 @@ class PackSet:
         with self._open_lock:
             if self._by_key is None:
                 for name in sorted(self._deferred):
-                    self._shards[name] = PackFile(self._deferred[name])
+                    shard = PackFile(self._deferred[name])
+                    shard.release_fd()  # the index is what is needed; a read reopens it
+                    self._shards[name] = shard
                     del self._deferred[name]
-                    self._trim_open_files()  # parsing opened its descriptor
                 by_key = {}
                 for name in sorted(self._shards):
                     for key in self._shards[name].member_names():
@@ -565,6 +566,7 @@ class PackSet:
             # deferred pack set: answer from the referenced shard alone, so a
             # full-ref read never opens shards it does not touch
             if key not in shard:
+                self._trim_open_files()  # parsing may have opened a descriptor no read will use
                 raise KeyError(f"blob not in the referenced shard: {key_or_ref!r}")
             return shard, key, None, None
         located, offset, size = self._locate(key)
