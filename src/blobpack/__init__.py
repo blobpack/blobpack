@@ -21,7 +21,6 @@ import posixpath
 import random
 import threading
 import zipfile
-from collections import OrderedDict
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -307,7 +306,7 @@ class PackSet:
     """Read a directory of pack shards with direct-offset (pread) access.
 
     Opening a PackSet parses each shard's central directory once and keeps
-    one open descriptor per shard; every ``read`` is then a single
+    a bounded descriptor pool; every ``read`` is then a single
     positioned read. Reads are thread-safe and fastest when issued
     concurrently on network filesystems.
 
@@ -356,9 +355,10 @@ class PackSet:
         # normalized exactly as the writer normalizes it, so the same value
         # given to both sides always matches
         self.ref_base = self.pack_dir.name if ref_base is None else (ref_base and posixpath.normpath(ref_base))
+        from ._sources import DescriptorPool
+
         self.max_open_files = max_open_files
-        self._recent: OrderedDict[str, PackFile] = OrderedDict()
-        self._recent_lock = threading.Lock()  # LRU bookkeeping only; reads never hold it
+        self._pool = DescriptorPool(max_open_files)
         self._open_lock = threading.Lock()  # guards deferred shard opening
         self._shards: dict[str, PackFile] = {}
         self._deferred: dict[str, object] = {}  # shard name -> unopened lazy source
@@ -372,7 +372,15 @@ class PackSet:
         except BaseException:
             self.close()
             raise
-        self._trim_open_files()
+
+    def _pack_file(self, source, **kwargs):
+        from ._sources import LocalSource, RangeSource
+
+        if not isinstance(source, RangeSource):
+            source = LocalSource(source)
+        if isinstance(source, LocalSource):
+            source.pool = self._pool
+        return PackFile(source, **kwargs)
 
     def _open_with_indices(self, sources: list, location: str, *, force_eager: bool = False) -> None:
         """Record every shard; parse directories eagerly for local sources
@@ -385,7 +393,7 @@ class PackSet:
                     raise BlobPackError(f"duplicate shard name {name!r} under {location}")
                 self._deferred[name] = source
                 continue
-            shard = PackFile(source, force_eager=force_eager)
+            shard = self._pack_file(source, force_eager=force_eager)
             name = _shard_name(shard.path)
             if name in self._shards:
                 raise BlobPackError(f"duplicate shard name {name!r} under {location}")
@@ -402,7 +410,7 @@ class PackSet:
         with self._open_lock:
             shard = self._shards.get(name)
             if shard is None:
-                shard = PackFile(self._deferred[name])
+                shard = self._pack_file(self._deferred[name])
                 self._shards[name] = shard
                 del self._deferred[name]  # only after success, so a failed open can be retried
             return shard
@@ -418,7 +426,7 @@ class PackSet:
             if self._by_key is not None:
                 return self._by_key
             for name in sorted(self._deferred):
-                self._shards[name] = PackFile(self._deferred[name])
+                self._shards[name] = self._pack_file(self._deferred[name])
                 del self._deferred[name]
             by_key = {}
             for name in sorted(self._shards):
@@ -437,7 +445,7 @@ class PackSet:
         self._catalog = open_catalog(self.pack_dir, catalog)
         probe = {}
         for source in sources:
-            shard = PackFile(source, build_index=False)
+            shard = self._pack_file(source, build_index=False)
             probe[_shard_name(shard.path)] = shard
         if self._catalog.matches(probe):
             self._shards = probe
@@ -466,38 +474,6 @@ class PackSet:
         sources = [FsspecSource(fs, posixpath.join(root, name)) for name in _remote_shard_names(fs, root, pattern)]
         return cls(root, _sources=sources, pattern=pattern, **kwargs)
 
-    def _trim_open_files(self, keep: PackFile | None = None) -> None:
-        """Close idle descriptors beyond max_open_files, least recent first;
-        indices stay in memory, so a closed shard reopens on its next read.
-        """
-        with self._recent_lock:
-            open_shards = [shard for shard in self._shards.values() if shard.is_open]
-            # a kept shard is about to be opened by the caller's read, so it
-            # counts against the budget even while its descriptor is still closed
-            pending = 0 if keep is None or keep.is_open else 1
-            excess = len(open_shards) + pending - self.max_open_files
-            if excess <= 0:
-                return
-            recent_ids = {id(shard) for shard in self._recent.values()}
-            candidates = [shard for shard in open_shards if id(shard) not in recent_ids]
-            candidates += list(self._recent.values())  # least recently used first
-            for shard in candidates:
-                if excess <= 0:
-                    break
-                if shard is keep or not shard.is_open:
-                    continue
-                if shard.release_fd():
-                    self._recent.pop(Path(shard.path).name, None)
-                    excess -= 1
-
-    def _touch(self, shard: PackFile) -> PackFile:
-        name = Path(shard.path).name
-        with self._recent_lock:
-            self._recent.pop(name, None)
-            self._recent[name] = shard
-        self._trim_open_files(keep=shard)
-        return shard
-
     def __getstate__(self) -> dict:
         """Pickle indices, never descriptors: a spawned dataloader worker
         reuses the parsed member index without re-reading any shard."""
@@ -507,15 +483,11 @@ class PackSet:
                 "construct it inside each worker instead"
             )
         state = self.__dict__.copy()
-        state["_recent"] = OrderedDict()
-        del state["_recent_lock"]
         del state["_open_lock"]
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
-        self._recent = OrderedDict()
-        self._recent_lock = threading.Lock()
         self._open_lock = threading.Lock()
 
     def _locate(self, key: str) -> tuple[PackFile, int | None, int | None]:
@@ -559,7 +531,7 @@ class PackSet:
     def read(self, key_or_ref: str) -> bytes:
         """Read one blob by bare key or by ``zip://key::path`` reference."""
         shard, key, offset, size = self._resolve(key_or_ref)
-        return self._touch(shard).read(key, offset=offset, size=size)
+        return shard.read(key, offset=offset, size=size)
 
     def __contains__(self, key: str) -> bool:
         if self._catalog is None:
@@ -581,7 +553,7 @@ class PackSet:
         wrapper most parsers expect.
         """
         shard, key, offset, size = self._resolve(key_or_ref)
-        view = self._touch(shard).open(key, offset=offset, size=size)
+        view = shard.open(key, offset=offset, size=size)
         return io.BufferedReader(view) if buffered else view
 
     def read_many(self, keys_or_refs: Iterable[str], *, workers: int = 8) -> list[bytes]:
@@ -642,7 +614,7 @@ class PackSet:
                 entries = self._catalog.entries(_shard_name(shard.path))
             for index, (key, offset, size) in enumerate(entries):
                 if start <= position + index < stop:
-                    yield key, self._touch(shard).read(key, offset=offset, size=size)
+                    yield key, shard.read(key, offset=offset, size=size)
             position += count
 
     def close(self) -> None:
@@ -650,6 +622,7 @@ class PackSet:
             shard.close()
         for source in self._deferred.values():
             source.close()
+        self._pool.close()
         if self._catalog is not None:
             self._catalog.close()
             self._catalog = None

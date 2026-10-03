@@ -147,3 +147,52 @@ def test_child_closing_does_not_break_parent(pack_dir):
         _, status = os.waitpid(pid, 0)
         assert os.WEXITSTATUS(status) == 0
         assert _read_all(packs) == PAYLOADS
+
+
+def test_index_build_respects_descriptor_budget(pack_dir, monkeypatch):
+    from blobpack._sources import LocalSource
+
+    original = LocalSource._ensure_fd
+    sources = set()
+
+    def ensure(source):
+        fd = original(source)
+        sources.add(source)
+        assert sum(s.is_open for s in sources) <= 4
+        return fd
+
+    monkeypatch.setattr(LocalSource, "_ensure_fd", ensure)
+    with PackSet(pack_dir, max_open_files=4) as packs:
+        assert _read_all(packs) == PAYLOADS
+
+
+def test_live_views_share_the_descriptor_budget(pack_dir):
+    with PackSet(pack_dir, max_open_files=2) as packs:
+        views = [packs.open(key, buffered=False) for key in PAYLOADS]
+        try:
+            for _ in range(2):
+                for view, expected in zip(views, PAYLOADS.values()):
+                    view.seek(0)
+                    assert view.read() == expected
+                    assert sum(s.is_open for s in packs._shards.values()) <= 2
+        finally:
+            for view in views:
+                view.close()
+
+
+def test_warm_read_does_not_scan_all_shards(pack_dir, monkeypatch):
+    from blobpack._sources import LocalSource
+
+    with PackSet(pack_dir, max_open_files=4) as packs:
+        key = next(iter(PAYLOADS))
+        packs.read(key)
+        checked = []
+        original = LocalSource.is_open.fget
+
+        def is_open(source):
+            checked.append(source)
+            return original(source)
+
+        monkeypatch.setattr(LocalSource, "is_open", property(is_open))
+        assert packs.read(key) == PAYLOADS[key]
+        assert len(checked) <= 1
