@@ -36,11 +36,10 @@ to be interpreted as described in RFC 2119.
     - Absolute Blob References introduce external dependencies and make the dataset non-self-contained.
   - **Interoperability**: Tables and references use established ecosystem interfaces instead of dataset-specific storage APIs.
   - **Media Correctness**: Timestamped media references follow PTS-interval playback semantics.
-- **Canonical Representation**:
-  - Use Hugging Face Datasets as the table interface.
-  - Store Blob References as string-valued features such as `Value("string")` or sequences thereof.
-  - Use [MediaRef](https://github.com/open-world-agents/MediaRef) with [TorchCodec](https://github.com/meta-pytorch/torchcodec) for media references and decoding.
-    - Ad hoc implementations such as LeRobot's risk mapping timestamps to the wrong frames; see [playback semantics](https://github.com/open-world-agents/MediaRef/blob/main/docs/playback_semantics.md).
+- **Representation**:
+  - Store Blob References as string-valued table cells or elements of string sequences.
+  - BRCD does not require a particular table library or media decoder.
+  - Media decoding follows PTS-interval [playback semantics](https://github.com/open-world-agents/MediaRef/blob/main/docs/playback_semantics.md), regardless of the library used.
 - **Rationale**: Columnar operations avoid loading blob payloads, while Blob Packs reduce small-file pressure without sacrificing direct access.
 
 ## Note on Recording Formats
