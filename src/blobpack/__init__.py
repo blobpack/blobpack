@@ -51,7 +51,8 @@ __all__ = [
 ]
 
 DEFAULT_GROUP_FILL = 0.5
-DEFAULT_MAX_OPEN_FILES = 64
+DEFAULT_OPEN_FILE_BUDGET = 64
+DEFAULT_MAX_OPEN_FILES = DEFAULT_OPEN_FILE_BUDGET  # compatibility alias
 DEFAULT_MAX_PACK_BYTES = 4 << 30  # classic-zip ceiling, applies to the archive file
 DEFAULT_MAX_BLOB_COUNT = 65_535
 _LOCAL_OVERHEAD = 30  # local file header, excluding the name
@@ -306,9 +307,14 @@ class PackSet:
     """Read a directory of pack shards with direct-offset (pread) access.
 
     Opening a PackSet parses each shard's central directory once and keeps
-    a bounded descriptor pool; every ``read`` is then a single
+    a descriptor pool; every ``read`` is then a single
     positioned read. Reads are thread-safe and fastest when issued
     concurrently on network filesystems.
+
+    ``open_file_budget`` (default 64) is a soft budget for local descriptors.
+    Concurrent reads may exceed it while descriptors are in use; idle
+    descriptors are reclaimed when reads finish. ``max_open_files`` is a
+    compatibility alias; pass only one of these arguments.
 
     On object storage, directories load lazily instead: open lists the
     shards, a full reference touches only its own shard, and a member's
@@ -334,13 +340,18 @@ class PackSet:
         *,
         ref_base: str | None = None,
         pattern: str = "*.zip",
-        max_open_files: int = DEFAULT_MAX_OPEN_FILES,
+        open_file_budget: int | None = None,
+        max_open_files: int | None = None,
         storage_options: dict | None = None,
         catalog: bool | str | os.PathLike | None = None,
         _sources: list | None = None,
     ):
-        if max_open_files < 1:
-            raise ValueError("max_open_files must be at least 1")
+        if open_file_budget is not None and max_open_files is not None:
+            raise TypeError("pass only one of open_file_budget and max_open_files")
+        if open_file_budget is None:
+            open_file_budget = max_open_files if max_open_files is not None else DEFAULT_OPEN_FILE_BUDGET
+        if open_file_budget < 1:
+            raise ValueError("open_file_budget must be at least 1")
         location = os.fspath(pack_dir)
         if _sources is not None:
             sources = _sources
@@ -357,8 +368,9 @@ class PackSet:
         self.ref_base = self.pack_dir.name if ref_base is None else (ref_base and posixpath.normpath(ref_base))
         from ._sources import DescriptorPool
 
-        self.max_open_files = max_open_files
-        self._pool = DescriptorPool(max_open_files)
+        self.open_file_budget = open_file_budget
+        self.max_open_files = open_file_budget  # compatibility alias
+        self._pool = DescriptorPool(open_file_budget)
         self._open_lock = threading.Lock()  # guards deferred shard opening
         self._shards: dict[str, PackFile] = {}
         self._deferred: dict[str, object] = {}  # shard name -> unopened lazy source
