@@ -159,8 +159,9 @@ every caveat: [benchmarks/](benchmarks/).
 
 ## With Hugging Face Datasets
 
-Hugging Face Datasets is the BRCD's canonical table interface. References
-are plain strings, so tables need nothing special:
+Hugging Face Datasets is one table interface for BRCD; other table libraries
+can store the same references. References are plain strings, so tables need
+nothing special:
 
 ```python
 from datasets import Dataset, load_from_disk
