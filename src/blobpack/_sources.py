@@ -17,6 +17,18 @@ from concurrent.futures import ThreadPoolExecutor
 from ._zip import BlobPackError, CorruptPackError
 
 _HAS_PREAD = hasattr(os, "pread")
+_PROCESS_LOCK = threading.RLock()
+
+
+def _reset_process_lock():
+    global _PROCESS_LOCK
+    _PROCESS_LOCK = threading.RLock()
+
+
+# An inherited lock may be held by a vanished parent thread. Register once,
+# rather than retaining every source/pool through per-instance fork callbacks.
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_process_lock)
 
 
 class RangeSource:
@@ -80,11 +92,14 @@ class DescriptorPool:
 
     def _process(self):
         if self._pid != os.getpid():
-            for source in self._recent:
-                source._process()
-            self._recent = OrderedDict()
-            self._lock = threading.Lock()
-            self._pid = os.getpid()
+            with _PROCESS_LOCK:
+                if self._pid == os.getpid():
+                    return
+                for source in self._recent:
+                    source._process()
+                self._recent = OrderedDict()
+                self._lock = threading.Lock()
+                self._pid = os.getpid()
 
     def _trim(self, target):
         if len(self._recent) <= target:
@@ -143,13 +158,16 @@ class LocalSource(RangeSource):
 
     def _process(self):
         if self._pid != os.getpid():
-            fd, self._fd = self._fd, -1
-            self._inflight = 0
-            self._state_lock = threading.Lock()
-            self._read_lock = None if _HAS_PREAD else threading.Lock()
-            self._pid = os.getpid()
-            if fd >= 0:
-                os.close(fd)
+            with _PROCESS_LOCK:
+                if self._pid == os.getpid():
+                    return
+                fd, self._fd = self._fd, -1
+                self._inflight = 0
+                self._state_lock = threading.Lock()
+                self._read_lock = None if _HAS_PREAD else threading.Lock()
+                self._pid = os.getpid()
+                if fd >= 0:
+                    os.close(fd)
 
     def _ensure_fd(self) -> int:
         if self._fd < 0:

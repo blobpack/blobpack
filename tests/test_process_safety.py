@@ -215,3 +215,44 @@ def test_fork_reopen_does_not_leak_inherited_descriptor_copies(pack_dir):
         _, status = os.waitpid(pid, 0)
         assert os.WEXITSTATUS(status) == 0
         assert _read_all(packs) == PAYLOADS
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires fork")
+def test_forked_first_threaded_reads_keep_all_descriptors_tracked(tmp_path, monkeypatch):
+    import time
+
+    from blobpack._sources import LocalSource
+
+    path = tmp_path / "threaded"
+    keys = [str(i) for i in range(128)]
+    with PackWriter(path, max_blob_count=1) as writer:
+        for key in keys:
+            writer.add(key, key.encode())
+    original = LocalSource._process
+
+    delayed = False
+
+    def slow_reset(source):
+        nonlocal delayed
+        inherited = source._pid != os.getpid()
+        original(source)
+        if inherited and not delayed:
+            delayed = True
+            time.sleep(0.1)  # let another initializer finish before this one
+
+    monkeypatch.setattr(LocalSource, "_process", slow_reset)
+    with PackSet(path, max_open_files=4) as packs:
+        pid = os.fork()
+        if pid == 0:
+            status = 1
+            try:
+                assert packs.read_many(keys, workers=16) == [key.encode() for key in keys]
+                opened = sum(shard.is_open for shard in packs._shards.values())
+                assert opened == len(packs._pool._recent)
+                assert opened <= 4
+                status = 0
+            finally:
+                os._exit(status)
+        _, status = os.waitpid(pid, 0)
+        assert os.WEXITSTATUS(status) == 0
+        assert packs.read(keys[0]) == keys[0].encode()
