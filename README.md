@@ -405,8 +405,3 @@ blobs. This repository is one reference implementation of that contract. For tim
 ## License
 
 Apache-2.0
-
-Local descriptors are limited by `PackSet(max_open_files=64)` during index construction and
-reads, including reads through long-lived member views. Indices survive descriptor eviction.
-The pool tracks active descriptors rather than scanning every shard on each read. Concurrent
-in-flight reads can temporarily exceed the limit; idle descriptors are reclaimed when reads finish.
