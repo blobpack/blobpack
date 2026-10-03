@@ -135,16 +135,7 @@ class PackFile:
         if len(blocks) != len(infos):  # a source must never under-deliver silently
             raise CorruptPackError(f"{self.path}: batched read returned {len(blocks)} of {len(infos)} headers")
         for info, expected, block in zip(infos, expected_names, blocks):
-            if len(block) < LOCAL_HEADER_SIZE or block[:4] != LOCAL_HEADER_MAGIC:
-                raise CorruptPackError(f"{self.path}: bad local header for {info.filename!r}")
-            local_flags, local_method = struct.unpack("<HH", block[6:10])
-            name_len, extra_len = struct.unpack("<HH", block[26:30])
-            if name_len != len(expected):
-                raise CorruptPackError(
-                    f"{self.path}: local header name length for {info.filename!r} disagrees with the central directory"
-                )
-            local_name = block[LOCAL_HEADER_SIZE : LOCAL_HEADER_SIZE + name_len]
-            self._index_member(info, local_flags, local_method, name_len, extra_len, local_name, self._payload_end)
+            self._index_member(info, expected, block)
         self._reject_overlaps(infos)
 
     def _defer_members(self, infos: list[zipfile.ZipInfo]) -> None:
@@ -217,8 +208,8 @@ class PackFile:
             raise CorruptPackError(f"{self.path}: short read for {name!r} ({len(payload)} of {size} bytes)")
         return payload
 
-    def _parse_pending_header(self, name: str, entry: tuple[int, int, int, bytes], block: bytes) -> tuple[int, int]:
-        header_offset, size, flags, expected = entry
+    def _local_data_offset(self, name, header_offset, flags, expected, block):
+        """Validate a local header identically for eager and deferred readers."""
         if len(block) < LOCAL_HEADER_SIZE or block[:4] != LOCAL_HEADER_MAGIC:
             raise CorruptPackError(f"{self.path}: bad local header for {name!r}")
         local_flags, local_method = struct.unpack("<HH", block[6:10])
@@ -237,7 +228,11 @@ class PackFile:
             raise CorruptPackError(
                 f"{self.path}: local header name mismatch at offset {header_offset} (expected {name!r})"
             )
-        data_offset = header_offset + LOCAL_HEADER_SIZE + name_len + extra_len
+        return header_offset + LOCAL_HEADER_SIZE + name_len + extra_len
+
+    def _parse_pending_header(self, name: str, entry: tuple[int, int, int, bytes], block: bytes) -> tuple[int, int]:
+        header_offset, size, flags, expected = entry
+        data_offset = self._local_data_offset(name, header_offset, flags, expected, block)
         position = bisect.bisect_right(self._bounds, header_offset)  # bounds[position - 1] is this member
         if data_offset + size > self._bounds[position]:
             raise CorruptPackError(f"{self.path}: member {name!r} overlaps the next member or the central directory")
@@ -283,34 +278,14 @@ class PackFile:
             if end > next_start:
                 raise CorruptPackError(f"{self.path}: member {name!r} overlaps {next_name!r}")
 
-    def _index_member(
-        self,
-        info: zipfile.ZipInfo,
-        local_flags: int,
-        local_method: int,
-        name_len: int,
-        extra_len: int,
-        local_name: bytes,
-        payload_end: int,
-    ) -> None:
+    def _index_member(self, info: zipfile.ZipInfo, expected: bytes, block: bytes) -> None:
         name = info.filename
         if name in self.index:
             raise CorruptPackError(f"{self.path}: duplicate member name {name!r} within one shard")
-        encrypted = FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION
-        if (info.flag_bits | local_flags) & encrypted:
-            raise UnsupportedMemberError(f"{self.path}: member {name!r} is encrypted")
         if info.compress_type != zipfile.ZIP_STORED:
             raise NotStoredError(f"{self.path}: member {name!r} is not STORED; blobpack requires uncompressed members")
-        if local_method != zipfile.ZIP_STORED:
-            raise CorruptPackError(
-                f"{self.path}: local header of {name!r} disagrees with the central directory on compression method"
-            )
-        if local_name != _expected_name_bytes(info.filename, local_flags):
-            raise CorruptPackError(
-                f"{self.path}: local header name mismatch at offset {info.header_offset} (expected {name!r})"
-            )
-        data_offset = info.header_offset + LOCAL_HEADER_SIZE + name_len + extra_len
-        if data_offset + info.file_size > payload_end:
+        data_offset = self._local_data_offset(name, info.header_offset, info.flag_bits, expected, block)
+        if data_offset + info.file_size > self._payload_end:
             raise CorruptPackError(f"{self.path}: member {name!r} extends into the central directory")
         self.index[name] = (data_offset, info.file_size)
 

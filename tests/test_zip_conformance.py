@@ -161,3 +161,40 @@ def test_under_delivering_batch_source_rejected(tmp_path):
 
     with pytest.raises(CorruptPackError, match="of 2 headers"):
         PackFile(Stingy(path))
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    "offset, replacement, error, message",
+    [
+        (0, b"BAD!", CorruptPackError, "bad local header"),
+        (6, b"\x01\x00", UnsupportedMemberError, "encrypted"),
+        (8, b"\x08\x00", CorruptPackError, "compression method"),
+        (26, b"\x04\x00", CorruptPackError, "name length"),
+        (30, b"z.bin", CorruptPackError, "name mismatch"),
+    ],
+)
+def test_local_header_checks_agree_for_eager_and_lazy(tmp_path, lazy, offset, replacement, error, message):
+    from blobpack._sources import LocalSource
+
+    path = tmp_path / "corrupt.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("a.bin", b"payload")
+    raw = bytearray(path.read_bytes())
+    raw[offset : offset + len(replacement)] = replacement
+    path.write_bytes(raw)
+    source = LocalSource(path)
+    source.lazy_validation = lazy
+    try:
+        if lazy:
+            shard = PackFile(source)  # local checks wait until first access
+            try:
+                with pytest.raises(error, match=message):
+                    shard.read("a.bin")
+            finally:
+                shard.close()
+        else:
+            with pytest.raises(error, match=message):
+                PackFile(source)
+    finally:
+        source.close()
