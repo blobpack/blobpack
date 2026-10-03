@@ -11,11 +11,24 @@ from __future__ import annotations
 import io
 import os
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from ._zip import BlobPackError, CorruptPackError
 
 _HAS_PREAD = hasattr(os, "pread")
+_PROCESS_LOCK = threading.RLock()
+
+
+def _reset_process_lock():
+    global _PROCESS_LOCK
+    _PROCESS_LOCK = threading.RLock()
+
+
+# An inherited lock may be held by a vanished parent thread. Register once,
+# rather than retaining every source/pool through per-instance fork callbacks.
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_process_lock)
 
 
 class RangeSource:
@@ -64,34 +77,108 @@ class RangeSource:
         pass
 
 
+class DescriptorPool:
+    """Process-local LRU, enforced at actual reads (including open member views).
+
+    Concurrent borrowed descriptors may temporarily exceed the budget; idle
+    descriptors are reclaimed before opening another and after a read ends.
+    """
+
+    def __init__(self, limit):
+        self.limit = limit
+        self._pid = os.getpid()
+        self._recent = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _process(self):
+        if self._pid != os.getpid():
+            with _PROCESS_LOCK:
+                if self._pid == os.getpid():
+                    return
+                for source in self._recent:
+                    source._process()
+                self._recent = OrderedDict()
+                self._lock = threading.Lock()
+                self._pid = os.getpid()
+
+    def _trim(self, target):
+        if len(self._recent) <= target:
+            return
+        for source in list(self._recent):
+            if len(self._recent) <= target:
+                break
+            if not source.is_open or source.release():
+                del self._recent[source]
+
+    def acquire(self, source):
+        self._process()
+        with self._lock:
+            self._recent.pop(source, None)
+            self._trim(self.limit - 1)
+            fd = source._acquire_local()
+            self._recent[source] = None
+            return fd
+
+    def trim(self):
+        self._process()
+        with self._lock:
+            self._trim(self.limit)
+
+    def close(self):
+        self._process()
+        with self._lock:
+            for source in self._recent:
+                source.close()
+            self._recent.clear()
+
+    def __getstate__(self):
+        return {"limit": self.limit}
+
+    def __setstate__(self, state):
+        self.__init__(state["limit"])
+
+
 class LocalSource(RangeSource):
     """A local file read with ``pread`` (or a lock-guarded seek+read).
 
     The descriptor is opened lazily and re-opened whenever the owning
-    process changes, so a descriptor inherited by a forked child or revived
-    by unpickling is never reused or closed by the wrong process. Reads
-    borrow the descriptor, so a pool can only reclaim idle shards.
+    process changes. After fork, close the child's inherited descriptor
+    copy before reopening; this does not close the parent's descriptor.
+    Reads borrow the descriptor, so a pool can only reclaim idle shards.
     """
 
-    def __init__(self, path: os.PathLike | str):
+    def __init__(self, path: os.PathLike | str, *, pool=None):
         self.path = os.fspath(path)
+        self.pool = pool
         self._fd = -1
-        self._pid = -1
+        self._pid = os.getpid()
         self._inflight = 0
         self._state_lock = threading.Lock()
         self._read_lock = None if _HAS_PREAD else threading.Lock()
 
+    def _process(self):
+        if self._pid != os.getpid():
+            with _PROCESS_LOCK:
+                if self._pid == os.getpid():
+                    return
+                fd, self._fd = self._fd, -1
+                self._inflight = 0
+                self._state_lock = threading.Lock()
+                self._read_lock = None if _HAS_PREAD else threading.Lock()
+                self._pid = os.getpid()
+                if fd >= 0:
+                    os.close(fd)
+
     def _ensure_fd(self) -> int:
-        pid = os.getpid()
-        if self._fd >= 0 and self._pid == pid:
-            return self._fd
-        if self._fd >= 0:
-            self._fd = -1  # inherited: owned by another process, never closed here
-        self._fd = os.open(self.path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
-        self._pid = pid
+        if self._fd < 0:
+            self._fd = os.open(self.path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
         return self._fd
 
     def _acquire(self) -> int:
+        return self.pool.acquire(self) if self.pool is not None else self._acquire_local()
+
+    def _acquire_local(self) -> int:
+        self._process()
         with self._state_lock:
             fd = self._ensure_fd()
             self._inflight += 1
@@ -100,6 +187,8 @@ class LocalSource(RangeSource):
     def _release_borrow(self) -> None:
         with self._state_lock:
             self._inflight -= 1
+        if self.pool is not None:
+            self.pool.trim()
 
     def size(self) -> int:
         fd = self._acquire()
@@ -129,26 +218,26 @@ class LocalSource(RangeSource):
         return self._fd >= 0 and self._pid == os.getpid()
 
     def release(self) -> bool:
+        self._process()
         with self._state_lock:
             if self._inflight or self._fd < 0:
                 return False
-            if self._pid == os.getpid():
-                os.close(self._fd)
+            os.close(self._fd)
             self._fd = -1
             return True
 
     def close(self) -> None:
+        self._process()
         with self._state_lock:
             if self._fd >= 0:
-                if self._pid == os.getpid():
-                    os.close(self._fd)
+                os.close(self._fd)
                 self._fd = -1
 
     def __getstate__(self) -> dict:
-        return {"path": self.path}
+        return {"path": self.path, "pool": self.pool}
 
     def __setstate__(self, state: dict) -> None:
-        self.__init__(state["path"])
+        self.__init__(state["path"], pool=state["pool"])
 
 
 class _TailStream(io.RawIOBase):

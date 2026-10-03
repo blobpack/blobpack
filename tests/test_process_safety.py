@@ -27,7 +27,7 @@ def _read_all(packs):
 
 
 def test_open_files_stay_bounded(pack_dir):
-    with PackSet(pack_dir, max_open_files=4) as packs:
+    with PackSet(pack_dir, open_file_budget=4) as packs:
         assert len(packs._shards) > 4  # the pool has something to do
         assert _read_all(packs) == PAYLOADS
         open_now = [shard for shard in packs._shards.values() if shard.is_open]
@@ -36,9 +36,27 @@ def test_open_files_stay_bounded(pack_dir):
         assert _read_all(packs) == PAYLOADS
 
 
-def test_max_open_files_validated(pack_dir):
+@pytest.mark.parametrize("argument", ["open_file_budget", "max_open_files"])
+def test_open_file_budget_validated(pack_dir, argument):
     with pytest.raises(ValueError):
-        PackSet(pack_dir, max_open_files=0)
+        PackSet(pack_dir, **{argument: 0})
+
+
+@pytest.mark.parametrize("kwargs, expected", [({}, 64), ({"open_file_budget": 2}, 2), ({"max_open_files": 3}, 3)])
+def test_open_file_budget_alias_and_pickle(pack_dir, kwargs, expected):
+    with PackSet(pack_dir, **kwargs) as packs:
+        assert packs.open_file_budget == packs.max_open_files == expected
+        assert _read_all(packs) == PAYLOADS
+        assert sum(shard.is_open for shard in packs._shards.values()) <= expected
+        with pickle.loads(pickle.dumps(packs)) as restored:
+            assert restored.open_file_budget == expected
+            assert _read_all(restored) == PAYLOADS
+            assert sum(shard.is_open for shard in restored._shards.values()) <= expected
+
+
+def test_open_file_budget_rejects_both_names(pack_dir):
+    with pytest.raises(TypeError, match="pass only one"):
+        PackSet(pack_dir, open_file_budget=2, max_open_files=2)
 
 
 def test_pickle_roundtrip_without_descriptors(pack_dir):
@@ -105,7 +123,7 @@ def test_threads_read_while_pool_reclaims(pack_dir):
 
     def worker():
         try:
-            with PackSet(pack_dir, max_open_files=2) as packs:
+            with PackSet(pack_dir, open_file_budget=2) as packs:
                 for _ in range(20):
                     for key in keys:
                         assert packs.read(key) == PAYLOADS[key]
@@ -121,7 +139,7 @@ def test_threads_read_while_pool_reclaims(pack_dir):
 
 
 def test_close_is_idempotent_and_frees_descriptors(pack_dir):
-    packs = PackSet(pack_dir, max_open_files=4)
+    packs = PackSet(pack_dir, open_file_budget=4)
     packs.read(next(iter(PAYLOADS)))
     packs.close()
     packs.close()
@@ -147,3 +165,112 @@ def test_child_closing_does_not_break_parent(pack_dir):
         _, status = os.waitpid(pid, 0)
         assert os.WEXITSTATUS(status) == 0
         assert _read_all(packs) == PAYLOADS
+
+
+def test_index_build_respects_descriptor_budget(pack_dir, monkeypatch):
+    from blobpack._sources import LocalSource
+
+    original = LocalSource._ensure_fd
+    sources = set()
+
+    def ensure(source):
+        fd = original(source)
+        sources.add(source)
+        assert sum(s.is_open for s in sources) <= 4
+        return fd
+
+    monkeypatch.setattr(LocalSource, "_ensure_fd", ensure)
+    with PackSet(pack_dir, open_file_budget=4) as packs:
+        assert _read_all(packs) == PAYLOADS
+
+
+def test_live_views_share_the_descriptor_budget(pack_dir):
+    with PackSet(pack_dir, open_file_budget=2) as packs:
+        views = [packs.open(key, buffered=False) for key in PAYLOADS]
+        try:
+            for _ in range(2):
+                for view, expected in zip(views, PAYLOADS.values()):
+                    view.seek(0)
+                    assert view.read() == expected
+                    assert sum(s.is_open for s in packs._shards.values()) <= 2
+        finally:
+            for view in views:
+                view.close()
+
+
+def test_warm_read_does_not_scan_all_shards(pack_dir, monkeypatch):
+    from blobpack._sources import LocalSource
+
+    with PackSet(pack_dir, open_file_budget=4) as packs:
+        key = next(iter(PAYLOADS))
+        packs.read(key)
+        checked = []
+        original = LocalSource.is_open.fget
+
+        def is_open(source):
+            checked.append(source)
+            return original(source)
+
+        monkeypatch.setattr(LocalSource, "is_open", property(is_open))
+        assert packs.read(key) == PAYLOADS[key]
+        assert len(checked) <= 1
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self/fd") or not hasattr(os, "fork"), reason="Linux fork FD accounting")
+def test_fork_reopen_does_not_leak_inherited_descriptor_copies(pack_dir):
+    with PackSet(pack_dir, open_file_budget=4) as packs:
+        assert _read_all(packs) == PAYLOADS
+        pid = os.fork()
+        if pid == 0:
+            status = 1
+            try:
+                before = len(os.listdir("/proc/self/fd"))
+                assert _read_all(packs) == PAYLOADS
+                assert len(os.listdir("/proc/self/fd")) <= before
+                status = 0
+            finally:
+                os._exit(status)
+        _, status = os.waitpid(pid, 0)
+        assert os.WEXITSTATUS(status) == 0
+        assert _read_all(packs) == PAYLOADS
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires fork")
+def test_forked_first_threaded_reads_keep_all_descriptors_tracked(tmp_path, monkeypatch):
+    import time
+
+    from blobpack._sources import LocalSource
+
+    path = tmp_path / "threaded"
+    keys = [str(i) for i in range(128)]
+    with PackWriter(path, max_blob_count=1) as writer:
+        for key in keys:
+            writer.add(key, key.encode())
+    original = LocalSource._process
+
+    delayed = False
+
+    def slow_reset(source):
+        nonlocal delayed
+        inherited = source._pid != os.getpid()
+        original(source)
+        if inherited and not delayed:
+            delayed = True
+            time.sleep(0.1)  # let another initializer finish before this one
+
+    monkeypatch.setattr(LocalSource, "_process", slow_reset)
+    with PackSet(path, open_file_budget=4) as packs:
+        pid = os.fork()
+        if pid == 0:
+            status = 1
+            try:
+                assert packs.read_many(keys, workers=16) == [key.encode() for key in keys]
+                opened = sum(shard.is_open for shard in packs._shards.values())
+                assert opened == len(packs._pool._recent)
+                assert opened <= 4
+                status = 0
+            finally:
+                os._exit(status)
+        _, status = os.waitpid(pid, 0)
+        assert os.WEXITSTATUS(status) == 0
+        assert packs.read(keys[0]) == keys[0].encode()
