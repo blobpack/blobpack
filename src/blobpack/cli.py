@@ -83,43 +83,6 @@ def _cmd_convert_wds(args: argparse.Namespace) -> int:
     return 0
 
 
-def _confirm_conversion(yes: bool) -> bool:
-    if yes or input("Proceed? [y/N] ").strip().lower() in ("y", "yes"):
-        return True
-    print("aborted; nothing was written")
-    return False
-
-
-def _cmd_convert_lerobot(args: argparse.Namespace) -> int:
-    """Show what conversion would do, then do it once the caller agrees."""
-    from .lerobot import convert, plan_conversion
-
-    plan = plan_conversion(
-        Path(args.src), images=args.images, video=args.video, split_episodes=not args.no_split_episodes
-    )
-    print(f"{plan.render()}\n")
-    if args.dry_run:
-        return 0
-    if not _confirm_conversion(args.yes):
-        return 1
-    result = convert(
-        Path(args.src),
-        Path(args.dst),
-        plan=plan,
-        ref_base=args.ref_base,
-        max_pack_bytes=args.max_pack_bytes,
-        tolerance_frames=args.tolerance_frames,
-    )
-    parts = [f"{result['blobs']:,} blobs ({result['bytes']:,} bytes) in {result['shards']} shard(s)"]
-    if result["videos"]:
-        parts.append(f"{result['videos']} video container(s), indexed in {result['index_path']}")
-    if result["image_keys"]:
-        e = result["embedded"]
-        parts.append(f"{e['frames']:,} frames extracted, {e['tables']} table(s) rewritten under {args.dst}/data")
-    print("wrote " + "; ".join(parts))
-    return 0
-
-
 def _choose_columns(plan) -> list[str] | None:
     """Ask which measured columns hold payloads; Lance does not say."""
     candidates = [c.name for c in plan.columns]
@@ -164,7 +127,8 @@ def _cmd_convert_lance(args: argparse.Namespace) -> int:
         plan = plan_conversion(Path(args.src), columns=chosen)
         print()
         print(f"{plan.render()}\n")
-    if not _confirm_conversion(args.yes):
+    if not args.yes and input("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+        print("aborted; nothing was written")
         return 1
     result = convert(
         Path(args.src), Path(args.dst), plan=plan, ref_base=args.ref_base, max_pack_bytes=args.max_pack_bytes
@@ -297,6 +261,22 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def _cmd_convert_parquet(args):
+    from .parquet import convert, plan_conversion
+
+    plan = plan_conversion(args.src, columns=args.column, fields=args.field)
+    print(json.dumps(plan, indent=2))
+    if args.dry_run:
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise BlobPackError("use --yes to accept the extraction plan")
+        if input("Extract selected binary fields? [y/N] ").strip().lower() not in {"y", "yes"}:
+            return 0
+    convert(args.src, args.dst, columns=args.column, fields=args.field, max_pack_bytes=args.max_pack_bytes)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="blobpack", description="Pack dataset media into plain STORED zip shards.")
     parser.add_argument("--version", action="version", version=__version__)
@@ -340,38 +320,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.set_defaults(func=_cmd_convert_wds)
 
-    p = sub.add_parser("convert-lerobot", help="pack a LeRobot dataset's media, after showing the plan")
-    p.add_argument("src", help="LeRobot dataset root (contains meta/ and videos/ or data/)")
-    p.add_argument("dst", help="output directory (receives media/, and data/ when tables are rewritten)")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    p.add_argument("--dry-run", action="store_true", help="print the plan and stop")
-    p.add_argument(
-        "--images",
-        choices=("extract", "skip"),
-        default="extract",
-        help="frames embedded in the table: extract to packs (rewrites the schema) or leave them",
-    )
-    p.add_argument(
-        "--video",
-        choices=("copy", "skip"),
-        default="copy",
-        help="video files: copy unchanged into packs or leave them",
-    )
-    p.add_argument(
-        "--no-split-episodes",
-        action="store_true",
-        help="keep concatenated video as it is instead of cutting one container per episode",
-    )
-    p.add_argument("--ref-base", default=None, help="pack dir path as seen from the dataset root (default: media)")
-    p.add_argument("--max-pack-bytes", type=int, default=None, help="maximum shard file size (default 4 GiB)")
-    p.add_argument(
-        "--tolerance-frames",
-        type=float,
-        default=1.0,
-        help="allowed drift, in frames, between an episode's length and its timestamp interval",
-    )
-    p.set_defaults(func=_cmd_convert_lerobot)
-
     p = sub.add_parser("convert-lance", help="move a Lance dataset's payload columns into packs")
     p.add_argument("src", help="Lance dataset (.lance directory)")
     p.add_argument("dst", help="output directory (receives media/ and table.lance)")
@@ -381,6 +329,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--dry-run", action="store_true", help="print the plan and stop")
     p.set_defaults(func=_cmd_convert_lance)
+
+    p = sub.add_parser("convert-parquet", help="extract selected Parquet binary fields into packs")
+    p.add_argument("src", help="Parquet file or directory of Parquet files")
+    p.add_argument("dst", help="new output directory (tables/, media/, extraction.json)")
+    p.add_argument("--column", action="append", help="literal top-level binary column name (repeatable)")
+    p.add_argument(
+        "--field", nargs="+", action="append", help="literal field path components, e.g. --field camera bytes"
+    )
+    p.add_argument("--max-pack-bytes", type=int, default=4 << 30)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=_cmd_convert_parquet)
 
     p = sub.add_parser("unpack", help="extract all blobs back to files")
     p.add_argument("src", help="pack directory")

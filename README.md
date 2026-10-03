@@ -229,7 +229,7 @@ packs = PackSet(f"hf://datasets/{REPO}/media")  # no download; ranged reads
 
 [examples/hf_hub.py](examples/hf_hub.py) runs the whole loop, and a live
 three-domain demo — PASS images, LibriSpeech utterances, and PushT
-episodes cut into per-episode containers by `convert-lerobot` — is up at
+episodes — is up at
 [MilkClouds/blobpack-demo](https://huggingface.co/datasets/MilkClouds/blobpack-demo).
 
 ## Migrating from other formats
@@ -237,13 +237,13 @@ episodes cut into per-episode containers by `convert-lerobot` — is up at
 Existing datasets convert in one command, and nothing is ever re-encoded:
 media bytes come out of a conversion exactly as they went into the source.
 Three layouts are supported, each behind its own extra
-(`pip install "blobpack[lerobot]"` / `"blobpack[lance]"`; WebDataset needs
+(`pip install "blobpack[parquet]"` / `"blobpack[lance]"`; WebDataset needs
 none):
 
 | source | command | what happens |
 |---|---|---|
 | WebDataset | `blobpack convert-wds` | tar members stream into indexed zip shards, keys preserved |
-| LeRobot v2/v3 | `blobpack convert-lerobot` | videos packet-copied, one container per episode; embedded frames extracted |
+| Parquet | `blobpack convert-parquet` | selected binary columns or struct leaves move to packs; other fields stay in the table |
 | Lance | `blobpack convert-lance` | chosen binary columns move to packs; the Lance table survives |
 
 WebDataset conversion changes nothing but the container, so it just runs.
@@ -284,65 +284,34 @@ sidecar `.idx`, sub-shard worker splitting, `verify`, and none of tar's
 </details>
 
 <details>
-<summary><b>From LeRobot</b> — v2/v3 video packet-copied into per-episode containers; embedded frames extracted</summary>
+<summary><b>From Parquet</b> — explicitly selected binary fields become blob references</summary>
 
-LeRobot stores camera observations two ways, and they are not the same
-conversion — which is exactly what the plan shows before anything is
-written.
-
-**Videos keep every packet they started with.** v2.x already stores one
-file per episode. v3 concatenates a camera's episodes into one file, and
-the converter cuts them apart again so each episode owns its container,
-copying packets rather than re-encoding:
-
-```
-before  (v3)                              after
-dataset/                                  out/
-  videos/observation.image/                 media/
-    chunk-000/file-000.mp4  <- 206 eps         pack-0000.zip
-  data/…  meta/…                                 …/episode_000000.mp4
-                                                 …/episode_000001.mp4  <- one per episode
-                                            data/…  meta/…  (copied: self-contained)
-                                            video_index.json
-                                              ep0  -> ref, [0 ns, 16.1 s)
-                                              ep1  -> ref, [0 ns, 11.8 s)
+```sh
+blobpack convert-parquet ./data ./out --column audio --yes
+blobpack convert-parquet ./data ./out --field observation.image bytes --yes
 ```
 
-A cut is only exact where an episode starts on a keyframe, so the converter
-probes keyframes first and reports the count; files whose boundaries miss
-stay concatenated, with episodes addressed by interval as before.
-`--no-split-episodes` keeps the source layout either way.
+`--column` selects a literal top-level binary column; `--field` takes literal
+struct-path components. Dots in names are not separators. The second example
+replaces only the `bytes` child with a string reference, preserving `path`,
+other fields and null masks. No media is decoded and external paths are not
+followed. Every selected field must exist and be binary in every input file.
+Use `--dry-run` to inspect selected fields and row counts without writing.
 
-**Frames embedded in the table are moved out** and the column becomes
-references, which is lossless for the bytes but changes the schema:
+Output contains `tables/` (the input Parquet file layout), `media/`, and
+`extraction.json`. Non-Parquet files are not copied. Batches contain at most
+128 rows; individual large payloads can exceed ordinary memory budgets.
+The destination must be new and disjoint from the source; failures remove
+partial output.
 
-```
-before  (v2.1, frames in parquet)         after
-data/episode_000000.parquet               media/pack-0000.zip
-  action            float32[]               frames/observation.images.camera_front/…
-  observation.…     struct<bytes, path>   data/episode_000000.parquet
-                    ^ 31.6 GB of frames     action          float32[]
-                                            observation.…   string  <- "zip://frames/…"
-```
+The receipt archives each original Arrow schema, including metadata, as base64
+Arrow IPC. HF/Pandas schema metadata is omitted from rewritten tables because
+it describes a different physical representation. Other schema metadata is
+retained. Applications read the output's explicit schema and string references.
 
-```
-$ blobpack convert-lerobot ./dataset ./out
-LeRobot v2.1 - 120 episodes, 120,000 frames @ 50 fps
-
-  observation.images.camera_front    image    120,000 frames inside the table
-      -> extracted to media/, column rewritten to blob references
-      -> random reads stop pulling a whole row group
-          bytes lossless, SCHEMA CHANGES
-  data/*.parquet                     120 file(s), 31.6 GB
-      -> rewritten
-  meta/                              -> copied unchanged
-
-Proceed? [y/N]
-```
-
-`--images extract|skip` / `--video copy|skip` decide per media kind, and
-the converter refuses to write an index whose intervals overlap or
-disagree with the episode lengths.
+Dataset-level robot interpretation and BRCD conversion use Epishelf's common
+`epishelf convert` path. Column extraction does not interpret episode boundaries,
+clocks or actions.
 
 </details>
 

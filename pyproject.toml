@@ -37,8 +37,8 @@ blobpack = "blobpack.cli:main"
 [project.optional-dependencies]
 hf = ["datasets"]
 remote = ["fsspec"]
-lerobot = ["pyarrow"]
 lance = ["pylance"]
+parquet = ["pyarrow"]
 
 [dependency-groups]
 bench = ["matplotlib", "torch", "opencv-python-headless", "pyarrow", "webdataset", "pylance", "soundfile"]
