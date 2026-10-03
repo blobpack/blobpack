@@ -80,6 +80,8 @@ class DescriptorPool:
 
     def _process(self):
         if self._pid != os.getpid():
+            for source in self._recent:
+                source._process()
             self._recent = OrderedDict()
             self._lock = threading.Lock()
             self._pid = os.getpid()
@@ -125,9 +127,9 @@ class LocalSource(RangeSource):
     """A local file read with ``pread`` (or a lock-guarded seek+read).
 
     The descriptor is opened lazily and re-opened whenever the owning
-    process changes, so a descriptor inherited by a forked child or revived
-    by unpickling is never reused or closed by the wrong process. Reads
-    borrow the descriptor, so a pool can only reclaim idle shards.
+    process changes. After fork, close the child's inherited descriptor
+    copy before reopening; this does not close the parent's descriptor.
+    Reads borrow the descriptor, so a pool can only reclaim idle shards.
     """
 
     def __init__(self, path: os.PathLike | str, *, pool=None):
@@ -139,24 +141,26 @@ class LocalSource(RangeSource):
         self._state_lock = threading.Lock()
         self._read_lock = None if _HAS_PREAD else threading.Lock()
 
-    def _ensure_fd(self) -> int:
-        pid = os.getpid()
-        if self._fd >= 0 and self._pid == pid:
-            return self._fd
-        if self._fd >= 0:
-            self._fd = -1  # inherited: owned by another process, never closed here
+    def _process(self):
+        if self._pid != os.getpid():
+            fd, self._fd = self._fd, -1
             self._inflight = 0
-        self._fd = os.open(self.path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
-        self._pid = pid
+            self._state_lock = threading.Lock()
+            self._read_lock = None if _HAS_PREAD else threading.Lock()
+            self._pid = os.getpid()
+            if fd >= 0:
+                os.close(fd)
+
+    def _ensure_fd(self) -> int:
+        if self._fd < 0:
+            self._fd = os.open(self.path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
         return self._fd
 
     def _acquire(self) -> int:
         return self.pool.acquire(self) if self.pool is not None else self._acquire_local()
 
     def _acquire_local(self) -> int:
-        if self._pid != os.getpid():
-            self._state_lock = threading.Lock()
-            self._read_lock = None if _HAS_PREAD else threading.Lock()
+        self._process()
         with self._state_lock:
             fd = self._ensure_fd()
             self._inflight += 1
@@ -196,19 +200,19 @@ class LocalSource(RangeSource):
         return self._fd >= 0 and self._pid == os.getpid()
 
     def release(self) -> bool:
+        self._process()
         with self._state_lock:
             if self._inflight or self._fd < 0:
                 return False
-            if self._pid == os.getpid():
-                os.close(self._fd)
+            os.close(self._fd)
             self._fd = -1
             return True
 
     def close(self) -> None:
+        self._process()
         with self._state_lock:
             if self._fd >= 0:
-                if self._pid == os.getpid():
-                    os.close(self._fd)
+                os.close(self._fd)
                 self._fd = -1
 
     def __getstate__(self) -> dict:

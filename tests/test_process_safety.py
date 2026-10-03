@@ -196,3 +196,22 @@ def test_warm_read_does_not_scan_all_shards(pack_dir, monkeypatch):
         monkeypatch.setattr(LocalSource, "is_open", property(is_open))
         assert packs.read(key) == PAYLOADS[key]
         assert len(checked) <= 1
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self/fd") or not hasattr(os, "fork"), reason="Linux fork FD accounting")
+def test_fork_reopen_does_not_leak_inherited_descriptor_copies(pack_dir):
+    with PackSet(pack_dir, max_open_files=4) as packs:
+        assert _read_all(packs) == PAYLOADS
+        pid = os.fork()
+        if pid == 0:
+            status = 1
+            try:
+                before = len(os.listdir("/proc/self/fd"))
+                assert _read_all(packs) == PAYLOADS
+                assert len(os.listdir("/proc/self/fd")) <= before
+                status = 0
+            finally:
+                os._exit(status)
+        _, status = os.waitpid(pid, 0)
+        assert os.WEXITSTATUS(status) == 0
+        assert _read_all(packs) == PAYLOADS
