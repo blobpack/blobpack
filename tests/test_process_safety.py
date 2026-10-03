@@ -36,27 +36,21 @@ def test_open_files_stay_bounded(pack_dir):
         assert _read_all(packs) == PAYLOADS
 
 
-@pytest.mark.parametrize("argument", ["open_file_budget", "max_open_files"])
-def test_open_file_budget_validated(pack_dir, argument):
+def test_open_file_budget_validated(pack_dir):
     with pytest.raises(ValueError):
-        PackSet(pack_dir, **{argument: 0})
+        PackSet(pack_dir, open_file_budget=0)
 
 
-@pytest.mark.parametrize("kwargs, expected", [({}, 64), ({"open_file_budget": 2}, 2), ({"max_open_files": 3}, 3)])
-def test_open_file_budget_alias_and_pickle(pack_dir, kwargs, expected):
+@pytest.mark.parametrize("kwargs, expected", [({}, 64), ({"open_file_budget": 2}, 2)])
+def test_open_file_budget_and_pickle(pack_dir, kwargs, expected):
     with PackSet(pack_dir, **kwargs) as packs:
-        assert packs.open_file_budget == packs.max_open_files == expected
+        assert packs.open_file_budget == expected
         assert _read_all(packs) == PAYLOADS
         assert sum(shard.is_open for shard in packs._shards.values()) <= expected
         with pickle.loads(pickle.dumps(packs)) as restored:
             assert restored.open_file_budget == expected
             assert _read_all(restored) == PAYLOADS
             assert sum(shard.is_open for shard in restored._shards.values()) <= expected
-
-
-def test_open_file_budget_rejects_both_names(pack_dir):
-    with pytest.raises(TypeError, match="pass only one"):
-        PackSet(pack_dir, open_file_budget=2, max_open_files=2)
 
 
 def test_pickle_roundtrip_without_descriptors(pack_dir):
