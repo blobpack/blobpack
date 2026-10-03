@@ -107,6 +107,7 @@ class Catalog:
                 offset INTEGER NOT NULL,
                 size INTEGER NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS blobs_by_shard ON blobs (shard, offset, key, size);
             """
         )
         self._db.commit()
