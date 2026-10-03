@@ -83,6 +83,13 @@ def _cmd_convert_wds(args: argparse.Namespace) -> int:
     return 0
 
 
+def _confirm_conversion(yes: bool) -> bool:
+    if yes or input("Proceed? [y/N] ").strip().lower() in ("y", "yes"):
+        return True
+    print("aborted; nothing was written")
+    return False
+
+
 def _cmd_convert_lerobot(args: argparse.Namespace) -> int:
     """Show what conversion would do, then do it once the caller agrees."""
     from .lerobot import convert, plan_conversion
@@ -90,15 +97,11 @@ def _cmd_convert_lerobot(args: argparse.Namespace) -> int:
     plan = plan_conversion(
         Path(args.src), images=args.images, video=args.video, split_episodes=not args.no_split_episodes
     )
-    print(plan.render())
-    print()
+    print(f"{plan.render()}\n")
     if args.dry_run:
         return 0
-    if not args.yes:
-        answer = input("Proceed? [y/N] ").strip().lower()
-        if answer not in ("y", "yes"):
-            print("aborted; nothing was written")
-            return 1
+    if not _confirm_conversion(args.yes):
+        return 1
     result = convert(
         Path(args.src),
         Path(args.dst),
@@ -143,8 +146,7 @@ def _cmd_convert_lance(args: argparse.Namespace) -> int:
     from .lance import convert, plan_conversion
 
     plan = plan_conversion(Path(args.src), columns=args.column or None)
-    print(plan.render())
-    print()
+    print(f"{plan.render()}\n")
     if args.dry_run:
         return 0
     if not args.column:
@@ -161,10 +163,8 @@ def _cmd_convert_lance(args: argparse.Namespace) -> int:
             return 1
         plan = plan_conversion(Path(args.src), columns=chosen)
         print()
-        print(plan.render())
-        print()
-    if not args.yes and input("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
-        print("aborted; nothing was written")
+        print(f"{plan.render()}\n")
+    if not _confirm_conversion(args.yes):
         return 1
     result = convert(
         Path(args.src), Path(args.dst), plan=plan, ref_base=args.ref_base, max_pack_bytes=args.max_pack_bytes
