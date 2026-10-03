@@ -210,3 +210,27 @@ def test_forked_child_closing_leaves_parent_connection_usable(pack_dir):
         _, status = os.waitpid(pid, 0)
         assert os.waitstatus_to_exitcode(status) == 0
         assert packs.read(key)  # parent's connection survived the child's close
+
+
+def test_shard_queries_use_covering_index_and_upgrade_existing_catalog(pack_dir, monkeypatch):
+    from blobpack._zip import PackFile
+
+    with PackSet(pack_dir, catalog=True) as packs:
+        packs._catalog._db.execute("DROP INDEX blobs_by_shard")
+        packs._catalog._db.commit()
+
+    def unexpected_rebuild(*args, **kwargs):
+        pytest.fail("adding a query index must not reparse validated packs")
+
+    monkeypatch.setattr(PackFile, "_build_index", unexpected_rebuild)
+    with PackSet(pack_dir, catalog=True) as packs:
+        db = packs._catalog._db
+        shard = next(iter(packs._shards))
+        for query in (
+            "SELECT COUNT(*) FROM blobs WHERE shard = ?",
+            "SELECT key, offset, size FROM blobs WHERE shard = ? ORDER BY offset",
+        ):
+            plan = " ".join(row[3] for row in db.execute("EXPLAIN QUERY PLAN " + query, (shard,)))
+            assert "SEARCH blobs USING COVERING INDEX blobs_by_shard" in plan
+            assert "TEMP B-TREE" not in plan
+        assert dict(packs.iter_blobs()) == PAYLOADS
