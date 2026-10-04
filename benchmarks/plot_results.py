@@ -33,12 +33,14 @@ CASE_STYLE = {
     "pack_stream": {"color": BLOBPACK, "marker": "^"},
     "pack_stream_catalog": {"color": "#0a3069", "marker": "D"},
     "pack_random_catalog": {"color": "#0a3069", "marker": "D"},
+    "pack_random_validate_on_open": {"color": "#54aeff", "marker": "v"},
 }
 
 LABELS = {
     "loose_random": "loose files",
     "pack_random": "blobpack",
     "pack_random_catalog": "blobpack + catalog",
+    "pack_random_validate_on_open": "blobpack, validate_on_open",
     "lance_random": "Lance",
     "wds_stream": "WebDataset",
     "pack_stream": "blobpack (stream)",
@@ -140,7 +142,7 @@ def plot_scaling() -> None:
 def plot_startup() -> None:
     """What opening a pack set costs, and what a catalog removes."""
     cephfs = load("dataloader_cephfs.json")
-    cases = ["loose_random", "wds_stream", "lance_random", "pack_random", "pack_random_catalog"]
+    cases = ["loose_random", "wds_stream", "lance_random", "pack_random_validate_on_open", "pack_random", "pack_random_catalog"]
     values = [ttfb(cephfs, c) or 0 for c in cases]
     colors = [ACCENT if c == "pack_random" else (BLOBPACK if "pack" in c else OTHER) for c in cases]
     fig, ax = plt.subplots(figsize=(6.5, 3.6), dpi=200)

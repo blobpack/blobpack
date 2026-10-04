@@ -159,8 +159,8 @@ class LooseDataset(Dataset):
 class PackDataset(Dataset):
     """Index-style random access, the pattern blobpack is built for."""
 
-    def __init__(self, pack_dir: Path, keys: list[str], catalog: Path | None = None):
-        self.pack_dir, self.keys, self.catalog = pack_dir, keys, catalog
+    def __init__(self, pack_dir: Path, keys: list[str], catalog: Path | None = None, validate_on_open: bool = False):
+        self.pack_dir, self.keys, self.catalog, self.validate_on_open = pack_dir, keys, catalog, validate_on_open
         self._packs = None
 
     def __len__(self) -> int:
@@ -168,7 +168,7 @@ class PackDataset(Dataset):
 
     def __getitem__(self, index: int) -> int:
         if self._packs is None:  # opened per worker process
-            self._packs = PackSet(self.pack_dir, catalog=self.catalog)
+            self._packs = PackSet(self.pack_dir, catalog=self.catalog, validate_on_open=self.validate_on_open)
         return decode(self._packs.read(self.keys[index]))
 
 
@@ -381,6 +381,7 @@ def main() -> int:
     cases = {
         "loose_random": lambda: LooseDataset(loose, keys),
         "pack_random": lambda: PackDataset(pack, keys),
+        "pack_random_validate_on_open": lambda: PackDataset(pack, keys, validate_on_open=True),
         "pack_random_catalog": lambda: PackDataset(pack, keys, catalog=work / "catalog.sqlite"),
         "lance_random": lambda: LanceDataset(lance_uri, len(keys)),
         "wds_stream": lambda: TarIterable(tars),
@@ -390,6 +391,7 @@ def main() -> int:
     roots = {
         "loose_random": loose,
         "pack_random": pack,
+        "pack_random_validate_on_open": pack,
         "pack_random_catalog": pack,
         "lance_random": lance_uri,
         "wds_stream": tars,
