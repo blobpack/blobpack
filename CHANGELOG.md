@@ -11,6 +11,9 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
   while a reader often touches a few members per shard. Neither path checks CRCs: `blobpack verify` is the at-rest
   integrity check. Errors a corrupt member raises move from open to its first read. `RangeSource.lazy_validation`
   is removed.
+- Benchmarks rerun with validation on first read (DataLoader workers forked; Python 3.14's `forkserver` default
+  adds ~1 s to every case's first batch): on CephFS the 40,000-member set's first batch drops from 11.3 s to 0.6 s
+  at steady throughput within 5%, and the speech set's cold sequential pass from 0.77 s to 0.26 s.
 - A forked child no longer waits on a deferred-open lock that a parent thread held at the fork, and a first read
   racing another thread's open of the same shard no longer raises `KeyError`.
 - Name the Blob-Referenced Columnar Dataset layout BRCD: the `SPEC.md` section becomes "Blob-Referenced Columnar

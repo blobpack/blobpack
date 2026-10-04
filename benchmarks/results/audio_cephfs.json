@@ -1,9 +1,9 @@
 {
  "storage": {
   "clips": 2703,
-  "loose_build_s": 0.7,
-  "pack_build_s": 0.4,
-  "tar_build_s": 0.5,
+  "loose_build_s": 0.6,
+  "pack_build_s": 0.3,
+  "tar_build_s": 0.3,
   "payload_bytes": 359034309,
   "mean_clip_bytes": 132828,
   "loose_bytes": 359731712,
@@ -16,47 +16,47 @@
  "reads": {
   "sequential_passes_s": [
    {
-    "seq_loose_s": 5.07,
-    "seq_pack_s": 0.77,
-    "seq_tar_s": 0.34
+    "seq_loose_s": 5.67,
+    "seq_pack_s": 0.26,
+    "seq_tar_s": 0.3
    },
    {
-    "seq_loose_s": 5.29,
-    "seq_pack_s": 0.7,
-    "seq_tar_s": 0.33
+    "seq_loose_s": 4.94,
+    "seq_pack_s": 0.23,
+    "seq_tar_s": 0.27
    },
    {
-    "seq_loose_s": 5.18,
-    "seq_pack_s": 0.72,
-    "seq_tar_s": 0.34
+    "seq_loose_s": 5.57,
+    "seq_pack_s": 0.27,
+    "seq_tar_s": 0.28
    }
   ],
   "sequential_cold_s": {
-   "seq_loose_s": 5.07,
-   "seq_pack_s": 0.77,
-   "seq_tar_s": 0.34
+   "seq_loose_s": 5.67,
+   "seq_pack_s": 0.26,
+   "seq_tar_s": 0.3
   },
   "sequential_median_s": {
-   "seq_loose_s": 5.18,
-   "seq_pack_s": 0.72,
-   "seq_tar_s": 0.34
+   "seq_loose_s": 5.57,
+   "seq_pack_s": 0.26,
+   "seq_tar_s": 0.28
   },
   "random_median": {
-   "rand_loose_ms_per_clip": 0.339,
-   "rand_pack_ms_per_clip": 0.35,
+   "rand_loose_ms_per_clip": 0.318,
+   "rand_pack_ms_per_clip": 0.317,
    "probes": 2000,
    "workers": 8
   }
  },
  "decode": {
   "decoded": 500,
-  "decode_loose_s": 1.71,
-  "decode_pack_s": 1.49
+  "decode_loose_s": 1.44,
+  "decode_pack_s": 0.71
  },
  "relocation": {
-  "loose_rsync_s": 4.76,
-  "loose_rm_s": 0.62,
-  "pack_rsync_s": 0.26,
-  "pack_rm_s": 0.03
+  "loose_rsync_s": 4.92,
+  "loose_rm_s": 0.97,
+  "pack_rsync_s": 1.32,
+  "pack_rm_s": 0.01
  }
 }

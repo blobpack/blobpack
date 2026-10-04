@@ -68,41 +68,50 @@ paid once and must not be read as slow reading.
 - **time to first batch**: opening the format, paid once per worker
 - **steady samples/s**: sustained rate on a second pass, workers already alive
 
-COCO train2017, 40,000 images (6.5 GB), batch 32, median of 3. Measured
-when a pack set validated every member's local header at open (now
-`validate_on_open=True`; members are validated on first read by default).
+COCO train2017, 40,000 images (6.5 GB), batch 32, median of 3; time to
+first batch at 8 workers. Python 3.14 with DataLoader workers started by
+`fork` (3.14's default, `forkserver`, re-imports torch in every worker and
+adds about 1 s to every case's first batch).
 
 **Shared filesystem (CephFS)**
 
 | case | TTFB | 1 worker | 4 workers | 8 workers |
 |---|---|---|---|---|
-| loose files | 0.21 s | 303 | 1071 | 1702 |
-| blobpack, in-memory index | 11.9 s | 442 | 2018 | **4190** |
-| blobpack, catalog | 0.35 s | 400 | 1736 | 3594 |
-| Lance | 1.21 s | 377 | 1558 | 3289 |
-| WebDataset (streaming) | 0.13 s | 513 | 2046 | 3864 |
-| blobpack streaming, catalog | 0.26 s | 526 | 2100 | **4167** |
+| loose files | 0.18 s | 298 | 1166 | 1808 |
+| blobpack | 0.59 s | 520 | 2062 | 3973 |
+| blobpack, `validate_on_open=True` | 11.3 s | 522 | 2082 | **4169** |
+| blobpack, catalog | 0.39 s | 426 | 1868 | 3208 |
+| Lance | 1.31 s | 382 | 1533 | 2885 |
+| WebDataset (streaming) | 0.14 s | 511 | 2040 | 3954 |
+| blobpack streaming | 0.37 s | 524 | 2097 | 4069 |
+| blobpack streaming, catalog | 0.20 s | 523 | 2080 | **4208** |
 
 **Node-local NVMe**
 
 | case | TTFB | 1 worker | 4 workers | 8 workers |
 |---|---|---|---|---|
-| loose files | 0.10 s | 490 | 1959 | 3875 |
-| blobpack, in-memory index | 3.49 s | 496 | 1974 | 3934 |
-| blobpack, catalog | 0.11 s | 487 | 1942 | 3880 |
-| Lance | 0.96 s | 357 | 1487 | 2963 |
-| WebDataset (streaming) | 0.10 s | 515 | 2058 | 3936 |
-| blobpack streaming, catalog | 0.22 s | 527 | 2098 | **4198** |
+| loose files | 0.12 s | 492 | 1960 | 3463 |
+| blobpack | 0.28 s | 492 | 1950 | 3571 |
+| blobpack, `validate_on_open=True` | 3.42 s | 498 | 1981 | **3681** |
+| blobpack, catalog | 0.16 s | 494 | 1955 | 3608 |
+| Lance | 0.94 s | 365 | 1546 | 2779 |
+| WebDataset (streaming) | 0.12 s | 513 | 2047 | 3954 |
+| blobpack streaming | 0.27 s | 526 | 2095 | 3993 |
+| blobpack streaming, catalog | 0.16 s | 529 | 2100 | **4032** |
 
 ![Startup cost and the catalog](plots/startup.png)
 
 Reading these:
 
-- On shared storage blobpack sustains **2.5x** loose files for random access
+- On shared storage blobpack sustains **2.2x** loose files for random access
   and edges past WebDataset for streaming; on local NVMe everything except
   Lance converges, because JPEG decoding becomes the bottleneck.
-- The catalog buys startup, not throughput: it removes the 11.9 s index
-  build but costs ~14% of random-access throughput (SQLite lookup per read
+- Validating members on first read removes most of the startup (11.3 s to
+  0.59 s on CephFS, 3.4 s to 0.28 s on NVMe). Steady random access stays
+  within 5% of validating at open: a member's first read in each worker
+  also reads its local header.
+- The catalog buys the rest of the startup, not throughput: it costs ~19%
+  of random-access throughput at 8 workers (an SQLite lookup per read
   instead of a dict hit). Under streaming the difference vanishes, since
   lookups amortize over sequential ranges.
 - Startup scales with member count, so it matters for short-lived processes
@@ -117,15 +126,15 @@ LibriSpeech dev-clean, 2,703 FLAC utterances, mean 133 KB, on CephFS:
 |---|---|---|---|
 | storage vs payload | +0.2% | +0.1% | +1.4% |
 | inodes | 2,841 | 2 | 2 |
-| full sequential pass (cold) | 5.07 s | 0.77 s | 0.34 s |
-| random read, 8 threads | 0.339 ms | 0.350 ms | not addressable |
-| decode 500 clips | 1.71 s | 1.49 s | - |
-| relocate (rsync) | 4.76 s | 0.26 s | - |
+| full sequential pass (cold) | 5.67 s | 0.26 s | 0.30 s |
+| random read, 8 threads | 0.318 ms | 0.317 ms | not addressable |
+| decode 500 clips | 1.44 s | 0.71 s | - |
+| relocate (rsync) | 4.92 s | 1.32 s | - |
 
 Speech corpora are the small-blob regime at production scale (millions of
 utterances); this corpus is small enough that the file-count effects are
-directional rather than a scaling measurement. Uncompressed tar wins the
-pure sequential pass and cannot address a single utterance without a
+directional rather than a scaling measurement. Uncompressed tar is as fast
+on the pure sequential pass and cannot address a single utterance without a
 side index, which is the trade it makes.
 
 A measurement pitfall this run surfaced, now guarded in both harnesses:

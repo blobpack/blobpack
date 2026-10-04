@@ -147,7 +147,7 @@ decoding every JPEG (COCO train2017, 40,000 images):
 
 ![Training-loader throughput](https://raw.githubusercontent.com/blobpack/blobpack/main/benchmarks/plots/throughput.png)
 
-On a shared cluster filesystem, blobpack sustains **2.5x loose files** on
+On a shared cluster filesystem, blobpack sustains **2.2x loose files** on
 random access and edges past WebDataset when streaming — while keeping
 random access, which streaming formats give up. On local NVMe every format
 converges because JPEG decoding becomes the bottleneck; there the isolated
@@ -156,9 +156,10 @@ storage layer serves blobs at 0.035 ms each, 21.5x faster than stock
 
 ![Scaling with workers](https://raw.githubusercontent.com/blobpack/blobpack/main/benchmarks/plots/scaling.png)
 
-Startup is a one-time cost, and the [catalog](#very-large-pack-sets)
-removes it: a 40,000-member set opens in 0.35 s instead of 12 s (measured
-with every member validated at open, then the default). Full
+Startup is small by default: members are validated on first read, so a
+40,000-member set on shared storage gives its first batch in 0.6 s (11 s
+with `validate_on_open=True`), and the [catalog](#very-large-pack-sets)
+brings it to 0.4 s. Full
 methodology, audio and video results, startup and shard-size sweeps, and
 every caveat: [benchmarks/](benchmarks/).
 
