@@ -147,9 +147,10 @@ class LocalSource(RangeSource):
     Reads borrow the descriptor, so a pool can only reclaim idle shards.
     """
 
-    def __init__(self, path: os.PathLike | str, *, pool=None):
+    def __init__(self, path: os.PathLike | str, *, pool=None, lazy_validation: bool = False):
         self.path = os.fspath(path)
         self.pool = pool
+        self.lazy_validation = lazy_validation  # a network filesystem: validate each member on first read
         self._fd = -1
         self._pid = os.getpid()
         self._inflight = 0
@@ -234,10 +235,10 @@ class LocalSource(RangeSource):
                 self._fd = -1
 
     def __getstate__(self) -> dict:
-        return {"path": self.path, "pool": self.pool}
+        return {"path": self.path, "pool": self.pool, "lazy_validation": self.lazy_validation}
 
     def __setstate__(self, state: dict) -> None:
-        self.__init__(state["path"], pool=state["pool"])
+        self.__init__(state["path"], pool=state["pool"], lazy_validation=state.get("lazy_validation", False))
 
 
 class _TailStream(io.RawIOBase):

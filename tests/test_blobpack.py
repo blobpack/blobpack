@@ -561,3 +561,70 @@ def test_cli_ls_into_a_closed_pipe_is_not_an_error(tmp_path):
     stderr = proc.stderr.read().decode()
     assert proc.wait() == 0, stderr
     assert "Traceback" not in stderr
+
+
+def test_lazy_validation_opens_local_shards_from_the_directory_alone(tmp_path, monkeypatch):
+    """A local pack set with lazy_validation reads no member headers at open; each member's header is checked on
+    its first read, the same checks as an eager open, and the choice survives pickling."""
+    import pickle
+
+    from blobpack._sources import LocalSource
+
+    with PackWriter(tmp_path / "media", ref_base="media") as writer:
+        refs = [writer.add(f"k{i:03d}.bin", bytes([i]) * (i + 1)) for i in range(40)]
+    batches = []
+    real = LocalSource.read_batch
+    monkeypatch.setattr(
+        LocalSource, "read_batch", lambda self, ranges: batches.append(len(ranges)) or real(self, ranges)
+    )
+    eager = PackSet(tmp_path / "media")
+    assert sum(batches) == 40  # one header read per member at open
+    batches.clear()
+    lazy = PackSet(tmp_path / "media", lazy_validation=True)
+    assert lazy.read(refs[7]) == bytes([7]) * 8 == eager.read(refs[7])
+    assert sum(batches) == 0
+    clone = pickle.loads(pickle.dumps(lazy))
+    assert clone.read(refs[39]) == bytes([39]) * 40
+    for packs in (eager, lazy, clone):
+        packs.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+def test_lazy_open_in_a_forked_child_does_not_wait_on_the_parents_lock(tmp_path):
+    """A child forked while a parent thread holds the deferred-open lock opens shards with its own lock."""
+    import multiprocessing
+
+    with PackWriter(tmp_path / "media", ref_base="media") as writer:
+        ref = writer.add("k.bin", b"payload")
+    packs = PackSet(tmp_path / "media", lazy_validation=True)
+    ctx = multiprocessing.get_context("fork")
+    with packs._open_guard():  # a parent thread mid-open at the fork
+        child = ctx.Process(target=lambda: os._exit(0 if packs.read(ref) == b"payload" else 1))
+        child.start()
+        child.join(30)
+    if child.is_alive():
+        child.kill()
+        pytest.fail("the child waited on the parent's lock")
+    assert child.exitcode == 0
+    packs.close()
+
+
+def test_lazy_read_finds_a_shard_another_thread_opened_meanwhile(tmp_path):
+    """A read that misses an unopened shard while another thread opens it uses that thread's shard."""
+    with PackWriter(tmp_path / "media", ref_base="media") as writer:
+        ref = writer.add("k.bin", b"payload")
+    packs = PackSet(tmp_path / "media", lazy_validation=True)
+    raced = []
+
+    class Racing(dict):
+        def get(self, key, default=None):
+            value = super().get(key, default)
+            if value is None and not raced:
+                raced.append(key)
+                packs._open_deferred(key)  # the other thread, right after this lookup
+            return value
+
+    packs._shards = Racing(packs._shards)
+    assert packs.read(ref) == b"payload"
+    assert raced
+    packs.close()

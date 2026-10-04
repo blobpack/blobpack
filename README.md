@@ -197,6 +197,11 @@ exact identity recorded at build time, and anything else rebuilds it with
 full validation — a shard swapped in place is never served through stale
 offsets.
 
+On a network filesystem, opening a shard also costs one small read per
+member to validate its local header. `PackSet("media", lazy_validation=True)`
+defers that check to each member's first read, as on object storage: a
+shard opens from its central directory alone.
+
 ### Object storage
 
 Packs work unchanged on anything fsspec speaks: the index builds from
