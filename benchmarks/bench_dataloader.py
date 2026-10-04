@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import resource
 import shutil
 import statistics
@@ -39,6 +40,8 @@ torch.set_num_threads(1)
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from blobpack import PackSet, PackWriter
+
+START_METHOD = "fork"
 
 SEED = 0
 SHARD_TARGET = 512 << 20
@@ -264,6 +267,9 @@ def run_loader(dataset, workers: int, batch_size: int, limit: int) -> dict:
         shuffle=isinstance(dataset, Dataset) and not isinstance(dataset, IterableDataset),
         persistent_workers=bool(workers),
         prefetch_factor=4 if workers else None,
+        # fork, as a Linux training job forks its workers: Python 3.14's default (forkserver) re-imports torch
+        # in every worker, ~1 s that would be counted as every format's opening cost
+        multiprocessing_context=START_METHOD if workers else None,
     )
     startup = _pass(loader, limit, batch_size)
     steady = _pass(loader, limit, batch_size)
@@ -347,6 +353,8 @@ def main() -> int:
             "storage": storage_class(work),
             "cpu_count": os.cpu_count(),
             "torch": torch.__version__,
+            "python": platform.python_version(),
+            "start_method": START_METHOD,
         },
         "build": {},
         "runs": {},
