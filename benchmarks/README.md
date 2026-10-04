@@ -68,7 +68,9 @@ paid once and must not be read as slow reading.
 - **time to first batch**: opening the format, paid once per worker
 - **steady samples/s**: sustained rate on a second pass, workers already alive
 
-COCO train2017, 40,000 images (6.5 GB), batch 32, median of 3.
+COCO train2017, 40,000 images (6.5 GB), batch 32, median of 3. Measured
+when a pack set validated every member's local header at open (now
+`validate_on_open=True`; members are validated on first read by default).
 
 **Shared filesystem (CephFS)**
 

@@ -1,16 +1,18 @@
 """Direct-offset access to STORED zip members (the "pread fast path").
 
 A STORED member is a contiguous raw byte range inside its archive. After one
-pass over the central directory -- plus one small read per member to size the
-local header, whose extra field may differ from the central directory's --
-every blob can be served with a single positioned read, with no per-read
-header parsing and no archive-level locking.
+pass over the central directory, every blob can be served with a single
+positioned read, with no per-read header parsing and no archive-level locking.
 
 Because direct-offset reads bypass zipfile's own checks, each member is
-cross-validated: local signature, local vs central compression method and
-filename, no encryption, and in-bounds payload ranges. Local sources run
-that pass at open; lazy sources (object storage) run it per member on first
-read, since scattered ~40-byte reads cost a round-trip each (issue #11).
+cross-validated before its bytes are served: local signature, local vs
+central compression method and filename, no encryption, and in-bounds
+payload ranges. The local header sits just before the payload and its extra
+field may differ from the central directory's, so this costs one small read
+per member. By default it happens on the member's first read, next to the
+payload it guards; ``validate_on_open`` runs it for every member at open,
+which on a network filesystem or object storage is one round trip each
+(issue #11).
 """
 
 from __future__ import annotations
@@ -62,16 +64,16 @@ class PackFile:
     them per process. Reads are thread-safe.
     """
 
-    def __init__(self, path_or_source, *, build_index: bool = True, force_eager: bool = False):
+    def __init__(self, path_or_source, *, build_index: bool = True, validate_on_open: bool = False):
         from ._sources import LocalSource, RangeSource
 
         self.source: RangeSource = (
             path_or_source if isinstance(path_or_source, RangeSource) else LocalSource(path_or_source)
         )
         self.index: dict[str, tuple[int, int]] = {}
-        # deferred members (lazy sources): name -> (header_offset, size,
-        # central flags, expected name bytes); index doubles as the cache of
-        # members whose local header has been validated
+        # members not yet validated: name -> (header_offset, size, central
+        # flags, expected name bytes); index doubles as the cache of members
+        # whose local header has been validated
         self._pending: dict[str, tuple[int, int, int, bytes]] = {}
         self._bounds: list[int] = []
         self._min_ends: list[int] = []
@@ -79,7 +81,7 @@ class PackFile:
         if not build_index:
             return  # a catalog supplies byte ranges; skip the central directory
         try:
-            self._build_index(force_eager=force_eager)
+            self._build_index(validate_on_open=validate_on_open)
         except BaseException:
             self.close()
             raise
@@ -100,12 +102,10 @@ class PackFile:
         """Drop idle process-bound state; the index stays usable."""
         return self.source.release()
 
-    def _build_index(self, *, force_eager: bool = False) -> None:
-        """Parse the central directory once. On sources where scattered
-        reads are cheap, cross-check every member's local header now; on
-        lazy sources (object storage) defer that check to each member's
-        first read, since one ~40-byte ranged read per member makes open
-        cost O(shard bytes) rather than O(directory) (issue #11)."""
+    def _build_index(self, *, validate_on_open: bool = False) -> None:
+        """Parse the central directory once and run every check it alone can
+        answer. Each member's local header is checked on its first read, or
+        here for every member with ``validate_on_open``."""
         stream = self.source.open_directory_stream()
         try:
             with zipfile.ZipFile(stream) as bundle:
@@ -122,7 +122,7 @@ class PackFile:
         if any(info.header_offset < 0 for info in infos):
             raise CorruptPackError(f"{self.path}: negative member header offset")
 
-        if self.source.lazy_validation and not force_eager:
+        if not validate_on_open:
             self._defer_members(infos)
             return
 

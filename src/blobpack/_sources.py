@@ -37,11 +37,6 @@ class RangeSource:
     #: identifies the shard for error messages and shard-name lookups
     path: str
 
-    #: True when scattered small reads cost a round-trip each (object
-    #: storage); readers then defer per-member validation to first read
-    #: instead of paying one such read per member at open (issue #11)
-    lazy_validation = False
-
     def size(self) -> int:
         raise NotImplementedError
 
@@ -147,10 +142,9 @@ class LocalSource(RangeSource):
     Reads borrow the descriptor, so a pool can only reclaim idle shards.
     """
 
-    def __init__(self, path: os.PathLike | str, *, pool=None, lazy_validation: bool = False):
+    def __init__(self, path: os.PathLike | str, *, pool=None):
         self.path = os.fspath(path)
         self.pool = pool
-        self.lazy_validation = lazy_validation  # a network filesystem: validate each member on first read
         self._fd = -1
         self._pid = os.getpid()
         self._inflight = 0
@@ -235,10 +229,10 @@ class LocalSource(RangeSource):
                 self._fd = -1
 
     def __getstate__(self) -> dict:
-        return {"path": self.path, "pool": self.pool, "lazy_validation": self.lazy_validation}
+        return {"path": self.path, "pool": self.pool}
 
     def __setstate__(self, state: dict) -> None:
-        self.__init__(state["path"], pool=state["pool"], lazy_validation=state.get("lazy_validation", False))
+        self.__init__(state["path"], pool=state["pool"])
 
 
 class _TailStream(io.RawIOBase):
@@ -302,8 +296,6 @@ class FsspecSource(RangeSource):
     credentials they hold -- and rebuilds the filesystem from them, rather
     than pickling a live client.
     """
-
-    lazy_validation = True
 
     def __init__(self, fs, path: str, *, storage_options: dict | None = None):
         self.fs = fs

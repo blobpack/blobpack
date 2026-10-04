@@ -4,6 +4,15 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+- **Breaking:** a `PackSet` validates each member's local header on the member's first read, on local paths as on
+  object storage, and opens each shard on first touch; `validate_on_open=True` validates every member and checks key
+  uniqueness across shards at open, as local pack sets did before. Validating at open costs one small read per
+  member, a round trip each on a network filesystem (~2.5 s for a cold 4.3 GB shard of ~400 members on CephFS),
+  while a reader often touches a few members per shard. Neither path checks CRCs: `blobpack verify` is the at-rest
+  integrity check. Errors a corrupt member raises move from open to its first read. `RangeSource.lazy_validation`
+  is removed.
+- A forked child no longer waits on a deferred-open lock that a parent thread held at the fork, and a first read
+  racing another thread's open of the same shard no longer raises `KeyError`.
 - Name the Blob-Referenced Columnar Dataset layout BRCD: the `SPEC.md` section becomes "Blob-Referenced Columnar
   Dataset (BRCD) Layout" (its anchor changes), and the README introduces a dataset built on
   Blob Packs as a BRCD from its first paragraph; the layout figure is titled for the BRCD with shorter notes.

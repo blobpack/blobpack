@@ -110,7 +110,9 @@ def test_rejects_compressed_members(tmp_path):
     with zipfile.ZipFile(pack_dir / "pack-0000.zip", "w", zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr("a.bin", os.urandom(1000) + b"\x00" * 4000)
     with pytest.raises(NotStoredError):
-        PackSet(pack_dir)
+        PackSet(pack_dir, validate_on_open=True)
+    with PackSet(pack_dir) as packs, pytest.raises(NotStoredError):  # the shard opens on first touch
+        packs.read("a.bin")
 
 
 def test_duplicate_keys_across_shards_rejected(tmp_path):
@@ -120,7 +122,9 @@ def test_duplicate_keys_across_shards_rejected(tmp_path):
         with zipfile.ZipFile(pack_dir / name, "w", zipfile.ZIP_STORED) as bundle:
             bundle.writestr(zipfile.ZipInfo("same.bin"), b"x")
     with pytest.raises(BlobPackError):
-        PackSet(pack_dir)
+        PackSet(pack_dir, validate_on_open=True)
+    with PackSet(pack_dir) as packs, pytest.raises(BlobPackError):  # bare keys resolve across shards
+        packs.read("same.bin")
 
 
 def test_iter_blobs_epoch(tmp_path, blobs):
@@ -200,7 +204,9 @@ def test_intra_shard_duplicate_rejected(tmp_path):
         bundle.writestr(zipfile.ZipInfo("same.bin"), b"one")
         bundle.writestr(zipfile.ZipInfo("same.bin"), b"two")
     with pytest.raises(CorruptPackError):
-        PackSet(pack_dir)
+        PackSet(pack_dir, validate_on_open=True)
+    with PackSet(pack_dir) as packs, pytest.raises(CorruptPackError):  # the shard opens on first touch
+        len(packs)
 
 
 def test_foreign_ref_rejected(tmp_path, blobs):
@@ -563,9 +569,9 @@ def test_cli_ls_into_a_closed_pipe_is_not_an_error(tmp_path):
     assert "Traceback" not in stderr
 
 
-def test_lazy_validation_opens_local_shards_from_the_directory_alone(tmp_path, monkeypatch):
-    """A local pack set with lazy_validation reads no member headers at open; each member's header is checked on
-    its first read, the same checks as an eager open, and the choice survives pickling."""
+def test_members_are_validated_on_first_read_unless_validate_on_open(tmp_path, monkeypatch):
+    """By default a pack set reads no member headers at open; each member's header is checked on its first read.
+    validate_on_open reads them all at open. Both serve the same bytes, also after pickling."""
     import pickle
 
     from blobpack._sources import LocalSource
@@ -577,10 +583,10 @@ def test_lazy_validation_opens_local_shards_from_the_directory_alone(tmp_path, m
     monkeypatch.setattr(
         LocalSource, "read_batch", lambda self, ranges: batches.append(len(ranges)) or real(self, ranges)
     )
-    eager = PackSet(tmp_path / "media")
+    eager = PackSet(tmp_path / "media", validate_on_open=True)
     assert sum(batches) == 40  # one header read per member at open
     batches.clear()
-    lazy = PackSet(tmp_path / "media", lazy_validation=True)
+    lazy = PackSet(tmp_path / "media")
     assert lazy.read(refs[7]) == bytes([7]) * 8 == eager.read(refs[7])
     assert sum(batches) == 0
     clone = pickle.loads(pickle.dumps(lazy))
@@ -590,13 +596,13 @@ def test_lazy_validation_opens_local_shards_from_the_directory_alone(tmp_path, m
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
-def test_lazy_open_in_a_forked_child_does_not_wait_on_the_parents_lock(tmp_path):
+def test_a_forked_child_opens_shards_without_the_parents_lock(tmp_path):
     """A child forked while a parent thread holds the deferred-open lock opens shards with its own lock."""
     import multiprocessing
 
     with PackWriter(tmp_path / "media", ref_base="media") as writer:
         ref = writer.add("k.bin", b"payload")
-    packs = PackSet(tmp_path / "media", lazy_validation=True)
+    packs = PackSet(tmp_path / "media")
     ctx = multiprocessing.get_context("fork")
     with packs._open_guard():  # a parent thread mid-open at the fork
         child = ctx.Process(target=lambda: os._exit(0 if packs.read(ref) == b"payload" else 1))
@@ -609,11 +615,11 @@ def test_lazy_open_in_a_forked_child_does_not_wait_on_the_parents_lock(tmp_path)
     packs.close()
 
 
-def test_lazy_read_finds_a_shard_another_thread_opened_meanwhile(tmp_path):
+def test_a_first_read_finds_a_shard_another_thread_opened_meanwhile(tmp_path):
     """A read that misses an unopened shard while another thread opens it uses that thread's shard."""
     with PackWriter(tmp_path / "media", ref_base="media") as writer:
         ref = writer.add("k.bin", b"payload")
-    packs = PackSet(tmp_path / "media", lazy_validation=True)
+    packs = PackSet(tmp_path / "media")
     raced = []
 
     class Racing(dict):

@@ -32,7 +32,7 @@ with PackWriter("media") as writer:
     refs = [writer.add(f"images/{i:04d}.jpg", os.urandom(1024)) for i in range(1000)]
     # refs[0] == "zip://images/0000.jpg::media/pack-0000.zip"
 
-# read: opens each shard's index once, then one positioned read per blob
+# read: a shard opens on first touch, then one positioned read per blob
 with PackSet("media") as packs:
     data = packs.read(refs[0])  # or packs.read("images/0000.jpg")
     batch = packs.read_many(refs, workers=8)  # concurrent, input order
@@ -73,9 +73,13 @@ shard) or a bare member name, resolved through the set's unique index.
 
 Every member is contiguous and uncompressed, so `PackSet` indexes offsets
 once, then serves each blob with one positioned read locally or one range
-request on object storage. The fast path skips per-read CRC checks by
-design: `blobpack verify` runs the full at-rest pass, and
-`blobpack manifest` records a SHA-256 per shard for distribution.
+request on object storage. Before a member's bytes are served its local
+header is checked against the central directory, on the member's first read
+and next to the payload it guards; `PackSet(..., validate_on_open=True)`
+checks every member at open instead. The fast path skips per-read CRC checks
+by design: run `blobpack verify` (the full at-rest pass) after writing or
+copying a pack, and `blobpack manifest` records a SHA-256 per shard for
+distribution.
 
 And because a shard is a plain zip archive, blobpack is never required to
 get your bytes back:
@@ -153,7 +157,8 @@ storage layer serves blobs at 0.035 ms each, 21.5x faster than stock
 ![Scaling with workers](https://raw.githubusercontent.com/blobpack/blobpack/main/benchmarks/plots/scaling.png)
 
 Startup is a one-time cost, and the [catalog](#very-large-pack-sets)
-removes it: a 40,000-member set opens in 0.35 s instead of 12 s. Full
+removes it: a 40,000-member set opens in 0.35 s instead of 12 s (measured
+with every member validated at open, then the default). Full
 methodology, audio and video results, startup and shard-size sweeps, and
 every caveat: [benchmarks/](benchmarks/).
 
@@ -184,8 +189,8 @@ move it across machines or clusters and it keeps working.
 
 ### Very large pack sets
 
-Opening a pack set parses every shard's index — fine for thousands of
-blobs, wasteful for millions. `catalog=True` keeps the mapping in a SQLite
+A bare-key read (or `len`, `keys`) parses every shard's index — fine for
+thousands of blobs, wasteful for millions. `catalog=True` keeps the mapping in a SQLite
 file next to the shards, so later opens cost a few queries:
 
 ```python
@@ -196,11 +201,6 @@ The catalog is a pure cache: it is reused only while every shard keeps the
 exact identity recorded at build time, and anything else rebuilds it with
 full validation — a shard swapped in place is never served through stale
 offsets.
-
-On a network filesystem, opening a shard also costs one small read per
-member to validate its local header. `PackSet("media", lazy_validation=True)`
-defers that check to each member's first read, as on object storage: a
-shard opens from its central directory alone.
 
 ### Object storage
 
