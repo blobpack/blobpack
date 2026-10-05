@@ -30,13 +30,13 @@ CASE_STYLE = {
     "lance_random": {"color": "#bf5af2", "marker": "s"},
     "wds_stream": {"color": "#2da44e", "marker": "^"},
     "pack_random": {"color": BLOBPACK, "marker": "o"},
-    "pack_stream": {"color": BLOBPACK, "marker": "^"},
+    "pack_stream": {"color": "#0a3069", "marker": "^"},  # navy: told apart from random-access blobpack
     "pack_random_validate_on_open": {"color": "#54aeff", "marker": "v"},
 }
 
 LABELS = {
     "loose_random": "loose files",
-    "pack_random": "blobpack",
+    "pack_random": "blobpack (random)",
     "pack_random_validate_on_open": "blobpack, validate_on_open",
     "lance_random": "Lance",
     "wds_stream": "WebDataset",
