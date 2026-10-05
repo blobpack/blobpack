@@ -198,41 +198,6 @@ def test_pickles_without_a_live_client(memory_packs):
         restored.close()
 
 
-def test_remote_identity_carries_more_than_size(memory_packs):
-    """A remote identity must carry a change marker beyond size where the
-    backend exposes one, and self-report as weak where it does not."""
-    from blobpack._catalog import _is_weak, shard_identity
-    from blobpack._sources import FsspecSource
-
-    fs, root, _ = memory_packs
-    source = FsspecSource(fs, fs.glob(f"{root}/*.zip")[0])
-    identity = shard_identity(source)
-    assert identity.startswith("size=")
-    assert _is_weak(identity) or ";" in identity.split("size=", 1)[1]
-
-
-def test_weak_remote_identity_is_never_trusted(tmp_path, monkeypatch):
-    """size=N alone cannot vouch for unchanged bytes: a same-size remote
-    replacement must rebuild, not reuse stale offsets."""
-    import blobpack._catalog as catalog_module
-    from blobpack import PackSet, PackWriter
-
-    with PackWriter(tmp_path / "media", ref_base="media") as writer:
-        writer.add("a.bin", b"A" * 64)
-
-    monkeypatch.setattr(catalog_module, "shard_identity", lambda source: f"size={source.size()};weak")
-    with PackSet(tmp_path / "media", catalog=True) as packs:
-        assert packs.read("a.bin") == b"A" * 64
-    rebuilds = []
-    original = catalog_module.Catalog.write
-    monkeypatch.setattr(
-        catalog_module.Catalog, "write", lambda self, shards: (rebuilds.append(1), original(self, shards))[1]
-    )
-    with PackSet(tmp_path / "media", catalog=True) as packs:
-        assert packs.read("a.bin") == b"A" * 64
-    assert rebuilds, "a weak identity was trusted and the catalog reused"
-
-
 def test_sync_filesystem_batches_run_concurrently(memory_packs):
     """A synchronous fsspec filesystem answers cat_ranges one request at a
     time; the batch path must not degrade to N sequential round-trips."""

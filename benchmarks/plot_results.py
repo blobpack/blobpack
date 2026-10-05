@@ -21,7 +21,6 @@ PLOTS = HERE / "plots"
 
 BLOBPACK = "#1f6feb"
 OTHER = "#8b949e"
-ACCENT = "#d29922"
 
 #: every non-blobpack series gets its own color and marker, so a
 #: multi-series figure is readable without tracing the legend by order
@@ -31,20 +30,14 @@ CASE_STYLE = {
     "wds_stream": {"color": "#2da44e", "marker": "^"},
     "pack_random": {"color": BLOBPACK, "marker": "o"},
     "pack_stream": {"color": BLOBPACK, "marker": "^"},
-    "pack_stream_catalog": {"color": "#0a3069", "marker": "D"},
-    "pack_random_catalog": {"color": "#0a3069", "marker": "D"},
-    "pack_random_validate_on_open": {"color": "#54aeff", "marker": "v"},
 }
 
 LABELS = {
     "loose_random": "loose files",
-    "pack_random": "blobpack",
-    "pack_random_catalog": "blobpack + catalog",
-    "pack_random_validate_on_open": "blobpack, validate_on_open",
+    "pack_random": "blobpack (random)",
     "lance_random": "Lance",
     "wds_stream": "WebDataset",
     "pack_stream": "blobpack (stream)",
-    "pack_stream_catalog": "blobpack (stream) + catalog",
 }
 
 
@@ -73,7 +66,7 @@ def plot_throughput() -> None:
     cephfs, nvme = load("dataloader_cephfs.json"), load("dataloader_nvme.json")
     groups = [
         ("random access", ["loose_random", "lance_random", "pack_random"]),
-        ("streaming", ["wds_stream", "pack_stream_catalog"]),
+        ("streaming", ["wds_stream", "pack_stream"]),
     ]
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), dpi=200)
     for ax, (title, cases) in zip(axes, groups):
@@ -111,40 +104,44 @@ def plot_throughput() -> None:
 
 
 def plot_scaling() -> None:
-    """How each format scales with dataloader workers on shared storage."""
+    """How each format scales with dataloader workers on shared storage, random access and streaming apart."""
     data = load("dataloader_cephfs.json")
-    cases = ["loose_random", "lance_random", "pack_random", "wds_stream", "pack_stream_catalog"]
-    fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=200)
+    groups = [
+        ("random access", ["loose_random", "lance_random", "pack_random"]),
+        ("streaming", ["wds_stream", "pack_stream"]),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), dpi=200, sharey=True)
     workers = [1, 4, 8]
-    for case in cases:
-        values = [steady(data, case, f"w{w}") for w in workers]
-        is_pack = "pack" in case
-        style_kwargs = CASE_STYLE[case]
-        ax.plot(
-            workers,
-            values,
-            linewidth=2.2 if is_pack else 1.4,
-            linestyle="-" if is_pack else "--",
-            label=LABELS[case],
-            **style_kwargs,
-        )
-    ax.set_xticks(workers)
-    ax.set_xlabel("dataloader workers")
-    ax.set_ylabel("samples/s (sustained)")
-    ax.set_title("Scaling on a shared filesystem", fontsize=11)
-    ax.legend(frameon=False, fontsize=8.5)
-    style(ax)
+    for ax, (title, cases) in zip(axes, groups):
+        for case in cases:
+            values = [steady(data, case, f"w{w}") for w in workers]
+            is_pack = "pack" in case
+            ax.plot(
+                workers,
+                values,
+                linewidth=2.2 if is_pack else 1.4,
+                linestyle="-" if is_pack else "--",
+                label=LABELS[case],
+                **CASE_STYLE[case],
+            )
+        ax.set_xticks(workers)
+        ax.set_xlabel("dataloader workers")
+        ax.set_title(title, fontsize=11)
+        ax.legend(frameon=False, fontsize=8.5)
+        style(ax)
+    axes[0].set_ylabel("samples/s (sustained)")
+    fig.suptitle("Scaling with workers on a shared filesystem", fontsize=12)
     fig.tight_layout()
     fig.savefig(PLOTS / "scaling.png", bbox_inches="tight")
     plt.close(fig)
 
 
 def plot_startup() -> None:
-    """What opening a pack set costs, and what a catalog removes."""
+    """What opening each format costs before the first batch."""
     cephfs = load("dataloader_cephfs.json")
-    cases = ["loose_random", "wds_stream", "lance_random", "pack_random", "pack_random_catalog"]
+    cases = ["loose_random", "wds_stream", "lance_random", "pack_random"]
     values = [ttfb(cephfs, c) or 0 for c in cases]
-    colors = [ACCENT if c == "pack_random" else (BLOBPACK if "pack" in c else OTHER) for c in cases]
+    colors = [BLOBPACK if "pack" in c else OTHER for c in cases]
     fig, ax = plt.subplots(figsize=(6.5, 3.6), dpi=200)
     bars = ax.barh([LABELS[c] for c in cases], values, color=colors, edgecolor="white")
     ax.bar_label(bars, fmt="%.2f s", fontsize=8.5, padding=3)

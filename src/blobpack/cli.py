@@ -147,7 +147,7 @@ def _cmd_unpack(args: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     out_resolved = out.resolve()
     with PackSet(args.src) as packs:
-        keys = packs.keys()  # lazy; a catalog-backed set streams from SQLite
+        keys = packs.keys()
         for key in keys:
             try:
                 _validate_key(key)

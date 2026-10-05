@@ -80,11 +80,9 @@ adds about 1 s to every case's first batch).
 | loose files | 0.18 s | 298 | 1166 | 1808 |
 | blobpack | 0.59 s | 520 | 2062 | 3973 |
 | blobpack, `validate_on_open=True` | 11.3 s | 522 | 2082 | **4169** |
-| blobpack, catalog | 0.39 s | 426 | 1868 | 3208 |
 | Lance | 1.31 s | 382 | 1533 | 2885 |
 | WebDataset (streaming) | 0.14 s | 511 | 2040 | 3954 |
-| blobpack streaming | 0.37 s | 524 | 2097 | 4069 |
-| blobpack streaming, catalog | 0.20 s | 523 | 2080 | **4208** |
+| blobpack streaming | 0.37 s | 524 | 2097 | **4069** |
 
 **Node-local NVMe**
 
@@ -93,13 +91,11 @@ adds about 1 s to every case's first batch).
 | loose files | 0.12 s | 492 | 1960 | 3463 |
 | blobpack | 0.28 s | 492 | 1950 | 3571 |
 | blobpack, `validate_on_open=True` | 3.42 s | 498 | 1981 | **3681** |
-| blobpack, catalog | 0.16 s | 494 | 1955 | 3608 |
 | Lance | 0.94 s | 365 | 1546 | 2779 |
 | WebDataset (streaming) | 0.12 s | 513 | 2047 | 3954 |
-| blobpack streaming | 0.27 s | 526 | 2095 | 3993 |
-| blobpack streaming, catalog | 0.16 s | 529 | 2100 | **4032** |
+| blobpack streaming | 0.27 s | 526 | 2095 | **3993** |
 
-![Startup cost and the catalog](plots/startup.png)
+![Startup cost](plots/startup.png)
 
 Reading these:
 
@@ -110,10 +106,6 @@ Reading these:
   0.59 s on CephFS, 3.4 s to 0.28 s on NVMe). Steady random access stays
   within 5% of validating at open: a member's first read in each worker
   also reads its local header.
-- The catalog buys the rest of the startup, not throughput: it costs ~19%
-  of random-access throughput at 8 workers (an SQLite lookup per read
-  instead of a dict hit). Under streaming the difference vanishes, since
-  lookups amortize over sequential ranges.
 - Startup scales with member count, so it matters for short-lived processes
   and very large sets, and amortizes to nothing across a long run with
   persistent workers.
