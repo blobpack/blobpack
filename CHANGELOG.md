@@ -4,6 +4,10 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+- **Breaking:** the SQLite catalog (`PackSet(..., catalog=...)`) is removed. With members validated on first read it
+  saved 0.2 s of a 40,000-member set's startup on CephFS (0.59 to 0.39 s) for ~19% of random-access throughput, its
+  WAL-mode database next to the shards is unsafe on network filesystems, and readers that use the references
+  `PackWriter` returns open only the shards they read. `PackFile.read` and `PackFile.open` take a member name only.
 - **Breaking:** a `PackSet` validates each member's local header on the member's first read, on local paths as on
   object storage, and opens each shard on first touch; `validate_on_open=True` validates every member and checks key
   uniqueness across shards at open, as local pack sets did before. Validating at open costs one small read per

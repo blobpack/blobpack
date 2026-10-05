@@ -342,7 +342,6 @@ class PackSet:
         pattern: str = "*.zip",
         open_file_budget: int = DEFAULT_OPEN_FILE_BUDGET,
         storage_options: dict | None = None,
-        catalog: bool | str | os.PathLike | None = None,
         validate_on_open: bool = False,
         _sources: list | None = None,
     ):
@@ -373,12 +372,8 @@ class PackSet:
         self._shards: dict[str, PackFile] = {}
         self._deferred: dict[str, object] = {}  # shard name -> unopened source
         self._by_key: dict[str, PackFile] | None = {}
-        self._catalog = None
         try:
-            if catalog:
-                self._open_with_catalog(sources, catalog)
-            else:
-                self._open_with_indices(sources, location, validate_on_open=validate_on_open)
+            self._open_with_indices(sources, location, validate_on_open=validate_on_open)
         except BaseException:
             self.close()
             raise
@@ -457,29 +452,6 @@ class PackSet:
             self._by_key = by_key
             return by_key
 
-    def _open_with_catalog(self, sources: list, catalog: bool | str | os.PathLike) -> None:
-        """Reuse a validated catalog when every shard is byte-identical to the
-        one recorded, and rebuild it (with full validation) otherwise."""
-        from ._catalog import open_catalog
-
-        self._catalog = open_catalog(self.pack_dir, catalog)
-        probe = {}
-        for source in sources:
-            shard = self._pack_file(source, build_index=False)
-            probe[_shard_name(shard.path)] = shard
-        if self._catalog.matches(probe):
-            self._shards = probe
-            return
-        for shard in probe.values():
-            shard.close()
-        # a catalog persists validated offsets, so the rebuild validates
-        # every member up front
-        self._open_with_indices(sources, str(self.pack_dir), validate_on_open=True)
-        self._catalog.write(self._shards)
-        self._by_key = {}
-        for shard in self._shards.values():
-            shard.drop_index()  # the catalog holds it now
-
     @classmethod
     def from_fs(cls, fs, path: str, *, pattern: str = "*.zip", **kwargs) -> PackSet:
         """Open a pack set on an already-configured fsspec filesystem.
@@ -497,11 +469,6 @@ class PackSet:
     def __getstate__(self) -> dict:
         """Pickle indices, never descriptors: a spawned dataloader worker
         reuses the parsed member index without re-reading any shard."""
-        if self._catalog is not None:
-            raise BlobPackError(
-                "a catalog-backed PackSet holds an open database and cannot be pickled; "
-                "construct it inside each worker instead"
-            )
         state = self.__dict__.copy()
         del state["_open_lock"]
         return state
@@ -510,22 +477,10 @@ class PackSet:
         self.__dict__.update(state)
         self._open_lock, self._open_pid = threading.Lock(), os.getpid()
 
-    def _locate(self, key: str) -> tuple[PackFile, int | None, int | None]:
-        """Find a key's shard, and its byte range when a catalog holds it."""
-        if self._catalog is None:
-            return self._require_by_key()[key], None, None
-        found = self._catalog.locate(key)
-        if found is None:
-            raise KeyError(key)
-        shard_name, offset, size = found
-        return self._shards[shard_name], offset, size
-
-    def _resolve(self, key_or_ref: str) -> tuple[PackFile, str, int | None, int | None]:
-        """Map a bare key or a ``zip://key::path`` reference to a shard, key
-        and (with a catalog) byte range."""
+    def _resolve(self, key_or_ref: str) -> tuple[PackFile, str]:
+        """Map a bare key or a ``zip://key::path`` reference to a shard and key."""
         if not key_or_ref.startswith(_REF_SCHEME):
-            shard, offset, size = self._locate(key_or_ref)
-            return shard, key_or_ref, offset, size
+            return self._require_by_key()[key_or_ref], key_or_ref
         key, pack_path = parse_ref(key_or_ref)
         if self.ref_base and posixpath.dirname(pack_path) != self.ref_base:
             raise KeyError(
@@ -537,32 +492,29 @@ class PackSet:
             shard = self._open_deferred(name)
         if shard is None:
             raise KeyError(f"referenced shard not in this pack set: {key_or_ref!r}")
-        if self._catalog is None and self._by_key is None:
+        if self._by_key is None:
             # deferred pack set: answer from the referenced shard alone, so a
             # full-ref read never opens shards it does not touch
             if key not in shard:
                 raise KeyError(f"blob not in the referenced shard: {key_or_ref!r}")
-            return shard, key, None, None
-        located, offset, size = self._locate(key)
-        if located is not shard:
+            return shard, key
+        if self._by_key.get(key) is not shard:
             raise KeyError(f"blob not in the referenced shard: {key_or_ref!r}")
-        return shard, key, offset, size
+        return shard, key
 
     def read(self, key_or_ref: str) -> bytes:
         """Read one blob by bare key or by ``zip://key::path`` reference."""
-        shard, key, offset, size = self._resolve(key_or_ref)
-        return shard.read(key, offset=offset, size=size)
+        shard, key = self._resolve(key_or_ref)
+        return shard.read(key)
 
     def __contains__(self, key: str) -> bool:
-        if self._catalog is None:
-            return key in self._require_by_key()
-        return self._catalog.locate(key) is not None
+        return key in self._require_by_key()
 
     def __len__(self) -> int:
-        return len(self._require_by_key()) if self._catalog is None else self._catalog.count()
+        return len(self._require_by_key())
 
     def keys(self) -> Iterator[str]:
-        return iter(self._require_by_key()) if self._catalog is None else self._catalog.keys()
+        return iter(self._require_by_key())
 
     def open(self, key_or_ref: str, *, buffered: bool = True):
         """Open one blob as a bounded, seekable, read-only file object.
@@ -572,8 +524,8 @@ class PackSet:
         blob's byte range. ``buffered=False`` skips the ``BufferedReader``
         wrapper most parsers expect.
         """
-        shard, key, offset, size = self._resolve(key_or_ref)
-        view = shard.open(key, offset=offset, size=size)
+        shard, key = self._resolve(key_or_ref)
+        view = shard.open(key)
         return io.BufferedReader(view) if buffered else view
 
     def read_many(self, keys_or_refs: Iterable[str], *, workers: int = 8) -> list[bytes]:
@@ -606,18 +558,14 @@ class PackSet:
         """
         if num_workers < 1 or not 0 <= worker_id < num_workers:
             raise ValueError(f"invalid worker split: worker_id={worker_id}, num_workers={num_workers}")
-        if self._catalog is None:
-            self._require_by_key()  # full iteration touches every shard anyway
+        self._require_by_key()  # full iteration touches every shard anyway
         # name order, not insertion order: on a deferred pack set insertion
         # follows access history, and worker splits must agree across
         # independently constructed instances
         shards = [self._shards[name] for name in sorted(self._shards)]
         if shuffle_shards:
             random.Random(seed).shuffle(shards)
-        if self._catalog is None:
-            counts = [shard.member_count for shard in shards]
-        else:
-            counts = [self._catalog.count(_shard_name(shard.path)) for shard in shards]
+        counts = [shard.member_count for shard in shards]
         total = sum(counts)
         start = worker_id * total // num_workers
         stop = (worker_id + 1) * total // num_workers
@@ -626,15 +574,9 @@ class PackSet:
             if position + count <= start or position >= stop:
                 position += count
                 continue
-            # stream this shard's entries; a catalog holds them in SQLite, so
-            # a million-member set never materializes its full listing here
-            if self._catalog is None:
-                entries = ((key, None, None) for key in shard.member_names())
-            else:
-                entries = self._catalog.entries(_shard_name(shard.path))
-            for index, (key, offset, size) in enumerate(entries):
+            for index, key in enumerate(shard.member_names()):
                 if start <= position + index < stop:
-                    yield key, shard.read(key, offset=offset, size=size)
+                    yield key, shard.read(key)
             position += count
 
     def close(self) -> None:
@@ -643,9 +585,6 @@ class PackSet:
         for source in self._deferred.values():
             source.close()
         self._pool.close()
-        if self._catalog is not None:
-            self._catalog.close()
-            self._catalog = None
 
     def __enter__(self) -> PackSet:
         return self

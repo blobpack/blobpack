@@ -64,7 +64,7 @@ class PackFile:
     them per process. Reads are thread-safe.
     """
 
-    def __init__(self, path_or_source, *, build_index: bool = True, validate_on_open: bool = False):
+    def __init__(self, path_or_source, *, validate_on_open: bool = False):
         from ._sources import LocalSource, RangeSource
 
         self.source: RangeSource = (
@@ -78,17 +78,11 @@ class PackFile:
         self._bounds: list[int] = []
         self._min_ends: list[int] = []
         self._payload_end = 0
-        if not build_index:
-            return  # a catalog supplies byte ranges; skip the central directory
         try:
             self._build_index(validate_on_open=validate_on_open)
         except BaseException:
             self.close()
             raise
-
-    def drop_index(self) -> None:
-        """Release the in-memory index once a catalog holds it."""
-        self.index = {}
 
     @property
     def path(self) -> str:
@@ -292,24 +286,22 @@ class PackFile:
     def _read_at(self, size: int, offset: int) -> bytes:
         return self.source.read_at(size, offset)
 
-    def read(self, name: str, *, offset: int | None = None, size: int | None = None) -> bytes:
-        if offset is None or size is None:
-            span = self.index.get(name)
-            if span is None:
-                entry = self._pending.get(name)
-                if entry is None:
-                    raise KeyError(name)
-                return self._read_pending(name, entry)
-            offset, size = span
+    def read(self, name: str) -> bytes:
+        span = self.index.get(name)
+        if span is None:
+            entry = self._pending.get(name)
+            if entry is None:
+                raise KeyError(name)
+            return self._read_pending(name, entry)
+        offset, size = span
         data = self.source.read_at(size, offset)
         if len(data) != size:
             raise CorruptPackError(f"{self.path}: short read for {name!r} ({len(data)} of {size} bytes)")
         return data
 
-    def open(self, name: str, *, offset: int | None = None, size: int | None = None) -> BlobView:
+    def open(self, name: str) -> BlobView:
         """Return a bounded, seekable view of one member."""
-        if offset is None or size is None:
-            offset, size = self._span(name)
+        offset, size = self._span(name)
         return BlobView(self, name, offset, size)
 
     def close(self) -> None:

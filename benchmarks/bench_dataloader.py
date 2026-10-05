@@ -162,8 +162,8 @@ class LooseDataset(Dataset):
 class PackDataset(Dataset):
     """Index-style random access, the pattern blobpack is built for."""
 
-    def __init__(self, pack_dir: Path, keys: list[str], catalog: Path | None = None, validate_on_open: bool = False):
-        self.pack_dir, self.keys, self.catalog, self.validate_on_open = pack_dir, keys, catalog, validate_on_open
+    def __init__(self, pack_dir: Path, keys: list[str], validate_on_open: bool = False):
+        self.pack_dir, self.keys, self.validate_on_open = pack_dir, keys, validate_on_open
         self._packs = None
 
     def __len__(self) -> int:
@@ -171,7 +171,7 @@ class PackDataset(Dataset):
 
     def __getitem__(self, index: int) -> int:
         if self._packs is None:  # opened per worker process
-            self._packs = PackSet(self.pack_dir, catalog=self.catalog, validate_on_open=self.validate_on_open)
+            self._packs = PackSet(self.pack_dir, validate_on_open=self.validate_on_open)
         return decode(self._packs.read(self.keys[index]))
 
 
@@ -217,14 +217,14 @@ class PackIterable(IterableDataset):
     """The same streaming pattern on packs, with member-range worker splits
     so shard count does not have to exceed worker count."""
 
-    def __init__(self, pack_dir: Path, catalog: Path | None = None):
-        self.pack_dir, self.catalog = pack_dir, catalog
+    def __init__(self, pack_dir: Path):
+        self.pack_dir = pack_dir
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
-        with PackSet(self.pack_dir, catalog=self.catalog) as packs:
+        with PackSet(self.pack_dir) as packs:
             for _, payload in packs.iter_blobs(worker_id=worker_id, num_workers=num_workers):
                 yield decode(payload)
 
@@ -390,21 +390,17 @@ def main() -> int:
         "loose_random": lambda: LooseDataset(loose, keys),
         "pack_random": lambda: PackDataset(pack, keys),
         "pack_random_validate_on_open": lambda: PackDataset(pack, keys, validate_on_open=True),
-        "pack_random_catalog": lambda: PackDataset(pack, keys, catalog=work / "catalog.sqlite"),
         "lance_random": lambda: LanceDataset(lance_uri, len(keys)),
         "wds_stream": lambda: TarIterable(tars),
         "pack_stream": lambda: PackIterable(pack),
-        "pack_stream_catalog": lambda: PackIterable(pack, catalog=work / "catalog.sqlite"),
     }
     roots = {
         "loose_random": loose,
         "pack_random": pack,
         "pack_random_validate_on_open": pack,
-        "pack_random_catalog": pack,
         "lance_random": lance_uri,
         "wds_stream": tars,
         "pack_stream": pack,
-        "pack_stream_catalog": pack,
     }
 
     if args.single:
