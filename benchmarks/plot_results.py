@@ -21,7 +21,6 @@ PLOTS = HERE / "plots"
 
 BLOBPACK = "#1f6feb"
 OTHER = "#8b949e"
-ACCENT = "#d29922"
 
 #: every non-blobpack series gets its own color and marker, so a
 #: multi-series figure is readable without tracing the legend by order
@@ -31,13 +30,11 @@ CASE_STYLE = {
     "wds_stream": {"color": "#2da44e", "marker": "^"},
     "pack_random": {"color": BLOBPACK, "marker": "o"},
     "pack_stream": {"color": BLOBPACK, "marker": "^"},
-    "pack_random_validate_on_open": {"color": "#54aeff", "marker": "v"},
 }
 
 LABELS = {
     "loose_random": "loose files",
     "pack_random": "blobpack (random)",
-    "pack_random_validate_on_open": "blobpack, validate_on_open",
     "lance_random": "Lance",
     "wds_stream": "WebDataset",
     "pack_stream": "blobpack (stream)",
@@ -144,7 +141,7 @@ def plot_startup() -> None:
     cephfs = load("dataloader_cephfs.json")
     cases = ["loose_random", "wds_stream", "lance_random", "pack_random"]
     values = [ttfb(cephfs, c) or 0 for c in cases]
-    colors = [ACCENT if c == "pack_random" else (BLOBPACK if "pack" in c else OTHER) for c in cases]
+    colors = [BLOBPACK if "pack" in c else OTHER for c in cases]
     fig, ax = plt.subplots(figsize=(6.5, 3.6), dpi=200)
     bars = ax.barh([LABELS[c] for c in cases], values, color=colors, edgecolor="white")
     ax.bar_label(bars, fmt="%.2f s", fontsize=8.5, padding=3)
