@@ -142,14 +142,14 @@ def plot_scaling() -> None:
 def plot_startup() -> None:
     """What opening a pack set costs, and what a catalog removes."""
     cephfs = load("dataloader_cephfs.json")
-    cases = ["loose_random", "wds_stream", "lance_random", "pack_random_validate_on_open", "pack_random", "pack_random_catalog"]
+    cases = ["loose_random", "wds_stream", "lance_random", "pack_random", "pack_random_catalog"]
     values = [ttfb(cephfs, c) or 0 for c in cases]
     colors = [ACCENT if c == "pack_random" else (BLOBPACK if "pack" in c else OTHER) for c in cases]
     fig, ax = plt.subplots(figsize=(6.5, 3.6), dpi=200)
     bars = ax.barh([LABELS[c] for c in cases], values, color=colors, edgecolor="white")
     ax.bar_label(bars, fmt="%.2f s", fontsize=8.5, padding=3)
     ax.set_xlabel("time to first batch (s), 40k-member set on shared storage")
-    ax.set_title("Deferred validation removes most of the startup; a catalog the rest", fontsize=11)
+    ax.set_title("Startup is paid once per worker", fontsize=11)
     ax.set_xlim(0, max(values) * 1.25)
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="x", color="#d0d7de", linewidth=0.6, alpha=0.7)
