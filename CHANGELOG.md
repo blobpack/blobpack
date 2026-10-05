@@ -4,10 +4,8 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
-- **Breaking:** the SQLite catalog (`PackSet(..., catalog=...)`) is removed. With members validated on first read it
-  saved 0.2 s of a 40,000-member set's startup on CephFS (0.59 to 0.39 s) for ~19% of random-access throughput, its
-  WAL-mode database next to the shards is unsafe on network filesystems, and readers that use the references
-  `PackWriter` returns open only the shards they read. `PackFile.read` and `PackFile.open` take a member name only.
+## 0.2.0
+
 - **Breaking:** a `PackSet` validates each member's local header on the member's first read, on local paths as on
   object storage, and opens each shard on first touch; `validate_on_open=True` validates every member and checks key
   uniqueness across shards at open, as local pack sets did before. Validating at open costs one small read per
@@ -15,14 +13,31 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
   while a reader often touches a few members per shard. Neither path checks CRCs: `blobpack verify` is the at-rest
   integrity check. Errors a corrupt member raises move from open to its first read. `RangeSource.lazy_validation`
   is removed.
+- **Breaking:** the SQLite catalog (`PackSet(..., catalog=...)`) is removed. With members validated on first read it
+  saved 0.2 s of a 40,000-member set's startup on CephFS (0.59 to 0.39 s) for ~19% of random-access throughput, its
+  WAL-mode database next to the shards is unsafe on network filesystems, and readers that use the references
+  `PackWriter` returns open only the shards they read. `PackFile.read` and `PackFile.open` take a member name only.
+- **Breaking:** `blobpack convert-lerobot`, the `blobpack.lerobot` module and its video splitting are removed;
+  interpreting a dataset (episodes, videos) belongs to epishelf's conversion. `blobpack convert-parquet` and
+  `blobpack.parquet.convert` extract explicitly selected Parquet binary columns or struct leaves into a Blob Pack
+  (`tables/`, `media/`, `extraction.json`), keeping other values, struct siblings and nulls intact.
+- A forked child no longer waits on a deferred-open lock that a parent thread held at the fork, and a first read
+  racing another thread's open of the same shard no longer raises `KeyError`.
 - Benchmarks rerun with validation on first read (DataLoader workers forked; Python 3.14's `forkserver` default
   adds ~1 s to every case's first batch): on CephFS the 40,000-member set's first batch drops from 11.3 s to 0.6 s
   at steady throughput within 5%, and the speech set's cold sequential pass from 0.77 s to 0.26 s.
-- A forked child no longer waits on a deferred-open lock that a parent thread held at the fork, and a first read
-  racing another thread's open of the same shard no longer raises `KeyError`.
+- The README states that BRCD does not require a specific library.
+
+## 0.1.5
+
 - Name the Blob-Referenced Columnar Dataset layout BRCD: the `SPEC.md` section becomes "Blob-Referenced Columnar
   Dataset (BRCD) Layout" (its anchor changes), and the README introduces a dataset built on
   Blob Packs as a BRCD from its first paragraph; the layout figure is titled for the BRCD with shorter notes.
+- Local reads keep to a soft descriptor budget, `open_file_budget` (default 64), across index construction, reads
+  and long-lived member views; idle descriptors are reclaimed when reads finish.
+- **Breaking:** `max_open_files` and `DEFAULT_MAX_OPEN_FILES` are removed; use `open_file_budget`.
+- Catalog-backed streaming walks a covering `(shard, offset, key, size)` index instead of rescanning each shard;
+  existing catalogs gain the index on open.
 
 ## 0.1.4
 
