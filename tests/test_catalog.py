@@ -140,7 +140,7 @@ def test_catalog_backed_set_refuses_to_pickle(pack_dir, tmp_path):
 def test_catalog_keys_stream_in_shard_order(pack_dir, tmp_path):
     catalog = Catalog(tmp_path / "c.sqlite")
     try:
-        with PackSet(pack_dir) as packs:
+        with PackSet(pack_dir, validate_on_open=True) as packs:  # a catalog records validated offsets
             catalog.write(packs._shards)
             expected = sorted(PAYLOADS)
         assert sorted(catalog.keys()) == expected

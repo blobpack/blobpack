@@ -33,12 +33,14 @@ CASE_STYLE = {
     "pack_stream": {"color": BLOBPACK, "marker": "^"},
     "pack_stream_catalog": {"color": "#0a3069", "marker": "D"},
     "pack_random_catalog": {"color": "#0a3069", "marker": "D"},
+    "pack_random_validate_on_open": {"color": "#54aeff", "marker": "v"},
 }
 
 LABELS = {
     "loose_random": "loose files",
     "pack_random": "blobpack",
     "pack_random_catalog": "blobpack + catalog",
+    "pack_random_validate_on_open": "blobpack, validate_on_open",
     "lance_random": "Lance",
     "wds_stream": "WebDataset",
     "pack_stream": "blobpack (stream)",
@@ -147,7 +149,7 @@ def plot_startup() -> None:
     bars = ax.barh([LABELS[c] for c in cases], values, color=colors, edgecolor="white")
     ax.bar_label(bars, fmt="%.2f s", fontsize=8.5, padding=3)
     ax.set_xlabel("time to first batch (s), 40k-member set on shared storage")
-    ax.set_title("Startup is paid once, and a catalog removes it", fontsize=11)
+    ax.set_title("Startup is paid once per worker", fontsize=11)
     ax.set_xlim(0, max(values) * 1.25)
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="x", color="#d0d7de", linewidth=0.6, alpha=0.7)

@@ -37,11 +37,6 @@ class RangeSource:
     #: identifies the shard for error messages and shard-name lookups
     path: str
 
-    #: True when scattered small reads cost a round-trip each (object
-    #: storage); readers then defer per-member validation to first read
-    #: instead of paying one such read per member at open (issue #11)
-    lazy_validation = False
-
     def size(self) -> int:
         raise NotImplementedError
 
@@ -301,8 +296,6 @@ class FsspecSource(RangeSource):
     credentials they hold -- and rebuilds the filesystem from them, rather
     than pickling a live client.
     """
-
-    lazy_validation = True
 
     def __init__(self, fs, path: str, *, storage_options: dict | None = None):
         self.fs = fs

@@ -305,22 +305,24 @@ def _open_remote_sources(location: str, pattern: str, storage_options: dict | No
 class PackSet:
     """Read a directory of pack shards with direct-offset (pread) access.
 
-    Opening a PackSet parses each shard's central directory once and keeps
-    a descriptor pool; every ``read`` is then a single
-    positioned read. Reads are thread-safe and fastest when issued
-    concurrently on network filesystems.
+    Shards open on first touch: a full ``zip://key::path`` reference reads
+    only its own shard's central directory, and the first bare-key read loads
+    every directory, since bare keys resolve through a cross-shard unique
+    index. A descriptor pool then serves every ``read`` as a single positioned
+    read. Reads are thread-safe and fastest when issued concurrently on
+    network filesystems.
 
     ``open_file_budget`` (default 64) is a soft budget for local descriptors.
     Concurrent reads may exceed it while descriptors are in use; idle
     descriptors are reclaimed when reads finish.
 
-    On object storage, directories load lazily instead: open lists the
-    shards, a full reference touches only its own shard, and a member's
-    local header is validated on its first read (adding one small ranged
-    read) rather than at open. The first bare-key read loads every
-    remaining directory, since bare keys resolve through a cross-shard
-    unique index. A corrupt or forged member therefore surfaces at first
-    read; ``blobpack verify`` remains the at-rest full check.
+    Each member's local header is validated on its first read, just before
+    the payload it guards (fused into that request where possible), so a
+    corrupt or forged member surfaces when it is first read.
+    ``validate_on_open=True`` opens every shard now, validates every member
+    (one small read each: on a network filesystem or object storage a round
+    trip each) and checks key uniqueness across shards. Neither verifies
+    CRCs: ``blobpack verify`` is the at-rest integrity check.
 
     ``ref_base`` is the pack directory's path as embedded in references
     (see PackWriter); references whose directory part does not match it are
@@ -341,6 +343,7 @@ class PackSet:
         open_file_budget: int = DEFAULT_OPEN_FILE_BUDGET,
         storage_options: dict | None = None,
         catalog: bool | str | os.PathLike | None = None,
+        validate_on_open: bool = False,
         _sources: list | None = None,
     ):
         if open_file_budget < 1:
@@ -351,7 +354,9 @@ class PackSet:
         elif storage_options is not None or _looks_remote(location):
             sources = _open_remote_sources(location, pattern, storage_options)
         else:
-            sources = sorted(Path(location).glob(pattern))
+            from ._sources import LocalSource
+
+            sources = [LocalSource(path) for path in sorted(Path(location).glob(pattern))]
         if not sources:
             raise BlobPackError(f"no {pattern} shards under {location}")
 
@@ -363,16 +368,17 @@ class PackSet:
 
         self.open_file_budget = open_file_budget
         self._pool = DescriptorPool(open_file_budget)
-        self._open_lock = threading.Lock()  # guards deferred shard opening
+        self._open_lock = threading.Lock()  # guards deferred shard opening; see _open_guard
+        self._open_pid = os.getpid()
         self._shards: dict[str, PackFile] = {}
-        self._deferred: dict[str, object] = {}  # shard name -> unopened lazy source
+        self._deferred: dict[str, object] = {}  # shard name -> unopened source
         self._by_key: dict[str, PackFile] | None = {}
         self._catalog = None
         try:
             if catalog:
                 self._open_with_catalog(sources, catalog)
             else:
-                self._open_with_indices(sources, location)
+                self._open_with_indices(sources, location, validate_on_open=validate_on_open)
         except BaseException:
             self.close()
             raise
@@ -386,21 +392,18 @@ class PackSet:
             source.pool = self._pool
         return PackFile(source, **kwargs)
 
-    def _open_with_indices(self, sources: list, location: str, *, force_eager: bool = False) -> None:
-        """Record every shard; parse directories eagerly for local sources
-        and on first touch for lazy ones (object storage), where a full-ref
-        read should not pay for shards it never visits (issue #11)."""
+    def _open_with_indices(self, sources: list, location: str, *, validate_on_open: bool) -> None:
+        """Record every shard to open on first touch, or with
+        ``validate_on_open`` open each now, validating every member and key
+        uniqueness across shards."""
         for source in sources:
-            if not force_eager and getattr(source, "lazy_validation", False):
-                name = _shard_name(source.path)
-                if name in self._deferred:
-                    raise BlobPackError(f"duplicate shard name {name!r} under {location}")
+            name = _shard_name(source.path)
+            if name in self._shards or name in self._deferred:
+                raise BlobPackError(f"duplicate shard name {name!r} under {location}")
+            if not validate_on_open:
                 self._deferred[name] = source
                 continue
-            shard = self._pack_file(source, force_eager=force_eager)
-            name = _shard_name(shard.path)
-            if name in self._shards:
-                raise BlobPackError(f"duplicate shard name {name!r} under {location}")
+            shard = self._pack_file(source, validate_on_open=True)
             self._shards[name] = shard
             for key in shard.member_names():
                 if key in self._by_key:
@@ -410,10 +413,23 @@ class PackSet:
         if self._deferred:
             self._by_key = None  # built when a bare key first needs it
 
-    def _open_deferred(self, name: str) -> PackFile:
-        with self._open_lock:
+    def _open_guard(self) -> threading.Lock:
+        """This process's deferred-open lock: one inherited across fork may be held by a parent thread that is
+        gone, so a child makes its own."""
+        if self._open_pid != os.getpid():
+            from . import _sources
+
+            with _sources._PROCESS_LOCK:
+                if self._open_pid != os.getpid():
+                    self._open_lock, self._open_pid = threading.Lock(), os.getpid()
+        return self._open_lock
+
+    def _open_deferred(self, name: str) -> PackFile | None:
+        """The named shard, opened now if it is deferred; None if the pack set has no such shard. Checked under
+        the lock, so a shard another thread opened meanwhile is found rather than missed."""
+        with self._open_guard():
             shard = self._shards.get(name)
-            if shard is None:
+            if shard is None and name in self._deferred:
                 shard = self._pack_file(self._deferred[name])
                 self._shards[name] = shard
                 del self._deferred[name]  # only after success, so a failed open can be retried
@@ -426,7 +442,7 @@ class PackSet:
         by_key = self._by_key
         if by_key is not None:
             return by_key
-        with self._open_lock:
+        with self._open_guard():
             if self._by_key is not None:
                 return self._by_key
             for name in sorted(self._deferred):
@@ -457,8 +473,8 @@ class PackSet:
         for shard in probe.values():
             shard.close()
         # a catalog persists validated offsets, so the rebuild validates
-        # every member up front even on a lazy source
-        self._open_with_indices(sources, str(self.pack_dir), force_eager=True)
+        # every member up front
+        self._open_with_indices(sources, str(self.pack_dir), validate_on_open=True)
         self._catalog.write(self._shards)
         self._by_key = {}
         for shard in self._shards.values():
@@ -492,7 +508,7 @@ class PackSet:
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
-        self._open_lock = threading.Lock()
+        self._open_lock, self._open_pid = threading.Lock(), os.getpid()
 
     def _locate(self, key: str) -> tuple[PackFile, int | None, int | None]:
         """Find a key's shard, and its byte range when a catalog holds it."""
@@ -517,7 +533,7 @@ class PackSet:
             )
         name = posixpath.basename(pack_path)
         shard = self._shards.get(name)
-        if shard is None and name in self._deferred:
+        if shard is None:
             shard = self._open_deferred(name)
         if shard is None:
             raise KeyError(f"referenced shard not in this pack set: {key_or_ref!r}")

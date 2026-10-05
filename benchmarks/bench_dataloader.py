@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import resource
 import shutil
 import statistics
@@ -39,6 +40,8 @@ torch.set_num_threads(1)
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from blobpack import PackSet, PackWriter
+
+START_METHOD = "fork"
 
 SEED = 0
 SHARD_TARGET = 512 << 20
@@ -159,8 +162,8 @@ class LooseDataset(Dataset):
 class PackDataset(Dataset):
     """Index-style random access, the pattern blobpack is built for."""
 
-    def __init__(self, pack_dir: Path, keys: list[str], catalog: Path | None = None):
-        self.pack_dir, self.keys, self.catalog = pack_dir, keys, catalog
+    def __init__(self, pack_dir: Path, keys: list[str], catalog: Path | None = None, validate_on_open: bool = False):
+        self.pack_dir, self.keys, self.catalog, self.validate_on_open = pack_dir, keys, catalog, validate_on_open
         self._packs = None
 
     def __len__(self) -> int:
@@ -168,7 +171,7 @@ class PackDataset(Dataset):
 
     def __getitem__(self, index: int) -> int:
         if self._packs is None:  # opened per worker process
-            self._packs = PackSet(self.pack_dir, catalog=self.catalog)
+            self._packs = PackSet(self.pack_dir, catalog=self.catalog, validate_on_open=self.validate_on_open)
         return decode(self._packs.read(self.keys[index]))
 
 
@@ -264,6 +267,9 @@ def run_loader(dataset, workers: int, batch_size: int, limit: int) -> dict:
         shuffle=isinstance(dataset, Dataset) and not isinstance(dataset, IterableDataset),
         persistent_workers=bool(workers),
         prefetch_factor=4 if workers else None,
+        # fork, as a Linux training job forks its workers: Python 3.14's default (forkserver) re-imports torch
+        # in every worker, ~1 s that would be counted as every format's opening cost
+        multiprocessing_context=START_METHOD if workers else None,
     )
     startup = _pass(loader, limit, batch_size)
     steady = _pass(loader, limit, batch_size)
@@ -347,6 +353,8 @@ def main() -> int:
             "storage": storage_class(work),
             "cpu_count": os.cpu_count(),
             "torch": torch.__version__,
+            "python": platform.python_version(),
+            "start_method": START_METHOD,
         },
         "build": {},
         "runs": {},
@@ -381,6 +389,7 @@ def main() -> int:
     cases = {
         "loose_random": lambda: LooseDataset(loose, keys),
         "pack_random": lambda: PackDataset(pack, keys),
+        "pack_random_validate_on_open": lambda: PackDataset(pack, keys, validate_on_open=True),
         "pack_random_catalog": lambda: PackDataset(pack, keys, catalog=work / "catalog.sqlite"),
         "lance_random": lambda: LanceDataset(lance_uri, len(keys)),
         "wds_stream": lambda: TarIterable(tars),
@@ -390,6 +399,7 @@ def main() -> int:
     roots = {
         "loose_random": loose,
         "pack_random": pack,
+        "pack_random_validate_on_open": pack,
         "pack_random_catalog": pack,
         "lance_random": lance_uri,
         "wds_stream": tars,

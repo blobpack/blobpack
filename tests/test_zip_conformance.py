@@ -10,6 +10,14 @@ from blobpack import CorruptPackError, PackSet, UnsupportedMemberError
 from blobpack._zip import PackFile
 
 
+def open_and_read_all(pack_dir, *, validate_on_open):
+    """Every check a reader runs: at open with validate_on_open, else on first touch and first read."""
+    with PackSet(pack_dir, validate_on_open=validate_on_open) as packs:
+        keys = list(packs.keys())  # bare keys open every shard
+        for key in keys:
+            packs.read(key)
+
+
 def test_zip64_local_extras(tmp_path):
     """force_zip64 adds a zip64 extra to the local header; the offset math
     must account for it (local extra length differs from the central one)."""
@@ -74,8 +82,9 @@ def test_forged_size_reaching_into_central_directory(tmp_path):
     # central-directory entry; CRC (offset 16) is left untouched
     struct.pack_into("<II", raw, cd + 20, forged, forged)
     shard.write_bytes(bytes(raw))
-    with pytest.raises(CorruptPackError, match="central directory"):
-        PackSet(pack_dir)
+    for validate_on_open in (True, False):
+        with pytest.raises(CorruptPackError, match="central directory"):
+            open_and_read_all(pack_dir, validate_on_open=validate_on_open)
 
 
 def test_truncated_local_header(tmp_path):
@@ -95,8 +104,9 @@ def test_truncated_local_header(tmp_path):
     forged = bytearray(raw)
     struct.pack_into("<I", forged, cd + 42, len(raw) - 8)  # header_offset field
     shard.write_bytes(bytes(forged))
-    with pytest.raises(CorruptPackError):
-        PackSet(pack_dir)
+    for validate_on_open in (True, False):
+        with pytest.raises(CorruptPackError):
+            open_and_read_all(pack_dir, validate_on_open=validate_on_open)
 
 
 def test_overlapping_members_rejected(tmp_path):
@@ -113,7 +123,13 @@ def test_overlapping_members_rejected(tmp_path):
         data[at + field_offset : at + field_offset + 4] = (100).to_bytes(4, "little")
     path.write_bytes(bytes(data))
     with pytest.raises(CorruptPackError, match="overlaps"):
-        PackFile(path)
+        PackFile(path, validate_on_open=True)
+    shard = PackFile(path)
+    try:
+        with pytest.raises(CorruptPackError, match="overlaps"):
+            shard.read("a.bin")
+    finally:
+        shard.close()
 
 
 def test_strong_encryption_flag_rejected(tmp_path):
@@ -160,10 +176,10 @@ def test_under_delivering_batch_source_rejected(tmp_path):
             return super().read_batch(ranges)[:-1]
 
     with pytest.raises(CorruptPackError, match="of 2 headers"):
-        PackFile(Stingy(path))
+        PackFile(Stingy(path), validate_on_open=True)  # the batch read of every header at open
 
 
-@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("validate_on_open", [True, False])
 @pytest.mark.parametrize(
     "offset, replacement, error, message",
     [
@@ -174,7 +190,9 @@ def test_under_delivering_batch_source_rejected(tmp_path):
         (30, b"z.bin", CorruptPackError, "name mismatch"),
     ],
 )
-def test_local_header_checks_agree_for_eager_and_lazy(tmp_path, lazy, offset, replacement, error, message):
+def test_local_header_checks_agree_at_open_and_on_first_read(
+    tmp_path, validate_on_open, offset, replacement, error, message
+):
     from blobpack._sources import LocalSource
 
     path = tmp_path / "corrupt.zip"
@@ -184,10 +202,9 @@ def test_local_header_checks_agree_for_eager_and_lazy(tmp_path, lazy, offset, re
     raw[offset : offset + len(replacement)] = replacement
     path.write_bytes(raw)
     source = LocalSource(path)
-    source.lazy_validation = lazy
     try:
-        if lazy:
-            shard = PackFile(source)  # local checks wait until first access
+        if not validate_on_open:
+            shard = PackFile(source)  # the checks wait until first access
             try:
                 with pytest.raises(error, match=message):
                     shard.read("a.bin")
@@ -195,6 +212,6 @@ def test_local_header_checks_agree_for_eager_and_lazy(tmp_path, lazy, offset, re
                 shard.close()
         else:
             with pytest.raises(error, match=message):
-                PackFile(source)
+                PackFile(source, validate_on_open=True)
     finally:
         source.close()

@@ -28,8 +28,8 @@ def _read_all(packs):
 
 def test_open_files_stay_bounded(pack_dir):
     with PackSet(pack_dir, open_file_budget=4) as packs:
-        assert len(packs._shards) > 4  # the pool has something to do
         assert _read_all(packs) == PAYLOADS
+        assert len(packs._shards) > 4  # the reads opened every shard: the pool has something to do
         open_now = [shard for shard in packs._shards.values() if shard.is_open]
         assert len(open_now) <= 4
         # a shard whose descriptor was reclaimed still reads
