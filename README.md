@@ -152,7 +152,8 @@ random access and edges past WebDataset when streaming — while keeping
 random access, which streaming formats give up. On local NVMe every format
 converges because JPEG decoding becomes the bottleneck; there the isolated
 storage layer serves blobs at 0.035 ms each, 21.5x faster than stock
-`zipfile` on the same shards. Scaling with workers is clean:
+`zipfile` on the same shards. With workers, blobpack's random access scales as
+the streaming formats do, while loose files flatten on shared storage:
 
 ![Scaling with workers](https://raw.githubusercontent.com/blobpack/blobpack/main/benchmarks/plots/scaling.png)
 

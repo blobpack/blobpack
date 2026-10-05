@@ -30,7 +30,7 @@ CASE_STYLE = {
     "lance_random": {"color": "#bf5af2", "marker": "s"},
     "wds_stream": {"color": "#2da44e", "marker": "^"},
     "pack_random": {"color": BLOBPACK, "marker": "o"},
-    "pack_stream": {"color": "#0a3069", "marker": "^"},  # navy: told apart from random-access blobpack
+    "pack_stream": {"color": BLOBPACK, "marker": "^"},
     "pack_random_validate_on_open": {"color": "#54aeff", "marker": "v"},
 }
 
@@ -107,29 +107,33 @@ def plot_throughput() -> None:
 
 
 def plot_scaling() -> None:
-    """How each format scales with dataloader workers on shared storage."""
+    """How each format scales with dataloader workers on shared storage, random access and streaming apart."""
     data = load("dataloader_cephfs.json")
-    cases = ["loose_random", "lance_random", "pack_random", "wds_stream", "pack_stream"]
-    fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=200)
+    groups = [
+        ("random access", ["loose_random", "lance_random", "pack_random"]),
+        ("streaming", ["wds_stream", "pack_stream"]),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), dpi=200, sharey=True)
     workers = [1, 4, 8]
-    for case in cases:
-        values = [steady(data, case, f"w{w}") for w in workers]
-        is_pack = "pack" in case
-        style_kwargs = CASE_STYLE[case]
-        ax.plot(
-            workers,
-            values,
-            linewidth=2.2 if is_pack else 1.4,
-            linestyle="-" if is_pack else "--",
-            label=LABELS[case],
-            **style_kwargs,
-        )
-    ax.set_xticks(workers)
-    ax.set_xlabel("dataloader workers")
-    ax.set_ylabel("samples/s (sustained)")
-    ax.set_title("Scaling on a shared filesystem", fontsize=11)
-    ax.legend(frameon=False, fontsize=8.5)
-    style(ax)
+    for ax, (title, cases) in zip(axes, groups):
+        for case in cases:
+            values = [steady(data, case, f"w{w}") for w in workers]
+            is_pack = "pack" in case
+            ax.plot(
+                workers,
+                values,
+                linewidth=2.2 if is_pack else 1.4,
+                linestyle="-" if is_pack else "--",
+                label=LABELS[case],
+                **CASE_STYLE[case],
+            )
+        ax.set_xticks(workers)
+        ax.set_xlabel("dataloader workers")
+        ax.set_title(title, fontsize=11)
+        ax.legend(frameon=False, fontsize=8.5)
+        style(ax)
+    axes[0].set_ylabel("samples/s (sustained)")
+    fig.suptitle("Scaling with workers on a shared filesystem", fontsize=12)
     fig.tight_layout()
     fig.savefig(PLOTS / "scaling.png", bbox_inches="tight")
     plt.close(fig)
